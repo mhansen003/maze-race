@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { Cell, Position, Direction, AgentConfig, MoveRequest, MoveOption, Enemy, EnemyType, NearbyEnemy } from '@/lib/types';
+import { Cell, Position, Direction, AgentConfig, Enemy, EnemyType } from '@/lib/types';
 import { generateMaze, getAvailableMoves, applyMove } from '@/lib/maze';
 
 // ─── Constants ─────────────────────────────────────────────
@@ -391,7 +391,6 @@ export default function MazeRacePage() {
   const stateRef = useRef<GameState>('ready');
   const turnRef = useRef(0);
   const winnerRef = useRef<AnimAgent | null>(null);
-  const processingRef = useRef(false);
   const gameLoopActiveRef = useRef(false);
   const moveTimeRef = useRef(0);
 
@@ -413,8 +412,8 @@ export default function MazeRacePage() {
   // ─── Mute toggle ───────────────────────────────────────────
 
   function getMuteButtonBounds() {
-    const size = 28;
-    return { x: window.innerWidth - size - 12, y: 8, w: size, h: size };
+    const size = 36;
+    return { x: window.innerWidth - size - 8, y: 4, w: size, h: size };
   }
 
   function toggleMute() {
@@ -543,7 +542,7 @@ export default function MazeRacePage() {
 
   // ─── Game logic ──────────────────────────────────────────
 
-  async function fetchMoves() {
+  function computeMoves(): { agentId: number; direction: Direction }[] {
     const maze = mazeRef.current;
     const agents = agentsRef.current;
     const enemies = enemiesRef.current;
@@ -552,64 +551,45 @@ export default function MazeRacePage() {
     const active = agents.filter((a) => !a.finished && a.frozenTurns <= 0);
     if (active.length === 0) return [];
 
-    return await Promise.all(
-      active.map(async (agent) => {
-        const directions = getAvailableMoves(maze, agent.position);
-        const lastMove = agent.history.length > 0 ? agent.history[agent.history.length - 1] : null;
+    return active.map((agent) => {
+      const directions = getAvailableMoves(maze, agent.position);
+      const lastMove = agent.history.length > 0 ? agent.history[agent.history.length - 1] : null;
 
-        const moveOptions: MoveOption[] = directions.map((dir) => {
-          let target = applyMove(agent.position, dir);
-          const wrapped = checkWrap(target, dir);
-          if (wrapped) target = wrapped;
-          const key = posKey(target);
-          return {
-            direction: dir,
-            row: target.row,
-            col: target.col,
-            distanceToGoal: manhattan(target, goal),
-            timesVisited: agent.visited[key] || 0,
-            isReverse: lastMove !== null && dir === OPPOSITE[lastMove],
-          };
-        });
-
-        const nearbyEnemies: NearbyEnemy[] = enemies
-          .map((e) => ({
-            type: e.type,
-            position: e.position,
-            distance: manhattan(agent.position, e.position),
-          }))
-          .filter((e) => e.distance <= ENEMY_DETECT_RANGE);
-
-        const body: MoveRequest = {
-          agentName: agent.name,
-          personality: agent.personality,
-          position: agent.position,
-          goal,
-          currentDistance: manhattan(agent.position, goal),
-          moveOptions,
-          recentMoves: agent.history.slice(-15),
-          nearbyEnemies,
-          isScrambled: false,
+      const options = directions.map((dir) => {
+        let target = applyMove(agent.position, dir);
+        const wrapped = checkWrap(target, dir);
+        if (wrapped) target = wrapped;
+        const key = posKey(target);
+        return {
+          direction: dir,
+          distanceToGoal: manhattan(target, goal),
+          timesVisited: agent.visited[key] || 0,
+          isReverse: lastMove !== null && dir === OPPOSITE[lastMove],
+          hasEnemy: enemies.some((e) => samePos(e.position, target)),
         };
+      });
 
-        try {
-          const res = await fetch('/api/move', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-          });
-          const data = await res.json();
-          return { agentId: agent.id, direction: data.direction as Direction };
-        } catch {
-          const best = [...moveOptions].sort((a, b) => {
-            if (a.timesVisited === 0 && b.timesVisited > 0) return -1;
-            if (b.timesVisited === 0 && a.timesVisited > 0) return 1;
-            return a.distanceToGoal - b.distanceToGoal;
-          });
-          return { agentId: agent.id, direction: best[0].direction };
-        }
-      })
-    );
+      // Sort: avoid enemies > unvisited > least visited > closest to goal
+      // with random tie-breaking for variety
+      const sorted = [...options].sort((a, b) => {
+        if (a.hasEnemy !== b.hasEnemy) return a.hasEnemy ? 1 : -1;
+        if (a.isReverse !== b.isReverse) return a.isReverse ? 1 : -1;
+        if (a.timesVisited !== b.timesVisited) return a.timesVisited - b.timesVisited;
+        return a.distanceToGoal - b.distanceToGoal;
+      });
+
+      // Random among tied-best options
+      const best = sorted[0];
+      const tied = sorted.filter(
+        (o) =>
+          o.hasEnemy === best.hasEnemy &&
+          o.isReverse === best.isReverse &&
+          o.timesVisited === best.timesVisited &&
+          o.distanceToGoal === best.distanceToGoal
+      );
+      const pick = tied[Math.floor(Math.random() * tied.length)];
+      return { agentId: agent.id, direction: pick.direction };
+    });
   }
 
   function applyMoves(results: { agentId: number; direction: Direction }[]) {
@@ -783,21 +763,12 @@ export default function MazeRacePage() {
     trackIndexRef.current = Math.random() < 0.5 ? 0 : 1;
     playTrack();
 
-    // Pipelined game loop — fetch next moves while current animation plays
+    // Continuous game loop — local pathfinding, no API delay
     (async () => {
-      let results = await fetchMoves();
-
       while (gameLoopActiveRef.current) {
-        // Apply moves → starts animation from prevPosition → position
+        const results = computeMoves();
         applyMoves(results);
-
-        // Fetch next moves while this animation plays
-        const [nextResults] = await Promise.all([
-          fetchMoves(),
-          new Promise((r) => setTimeout(r, ANIM_DURATION)),
-        ]);
-
-        results = nextResults;
+        await new Promise((r) => setTimeout(r, ANIM_DURATION));
       }
     })();
   }
@@ -812,7 +783,6 @@ export default function MazeRacePage() {
     powerUpsRef.current = createPowerUps();
     turnRef.current = 0;
     winnerRef.current = null;
-    processingRef.current = false;
     moveTimeRef.current = 0;
     pickedWinnerRef.current = null;
     notificationsRef.current = [];
@@ -888,8 +858,7 @@ export default function MazeRacePage() {
 
       // Check if clicking the start button (only if a winner is picked)
       if (pickedWinnerRef.current !== null) {
-        const mob = w < 600;
-        const btnY = mob ? h * 0.72 : h * 0.72;
+        const btnY = h * 0.72;
         if (my >= btnY - 25 && my <= btnY + 25) {
           startRace();
         }
@@ -1044,10 +1013,10 @@ export default function MazeRacePage() {
       ctx.fillStyle = '#6688aa';
       if (mob) {
         ctx.font = '10px "Courier New", monospace';
-        ctx.fillText('4 AI agents // dodge enemies', w / 2, titleY + 26);
+        ctx.fillText('4 bots // dodge enemies // reach the center', w / 2, titleY + 26);
       } else {
         ctx.font = '15px "Courier New", monospace';
-        ctx.fillText('4 AI agents  //  Gemini Flash  //  dodge enemies  //  reach the center', w / 2, titleY + 48);
+        ctx.fillText('4 pathfinding bots  //  dodge enemies  //  grab power-ups  //  reach the center', w / 2, titleY + 48);
       }
 
       // "WHO WILL WIN?" prompt
@@ -1186,15 +1155,18 @@ export default function MazeRacePage() {
       const showPov = w >= 900;
       const mazeAreaW = showPov ? w - POV_PANEL_W - 10 : w;
 
-      // ── Maze dimensions ──
-      const padding = 80;
+      // ── Maze dimensions — responsive padding ──
+      const isMobile = w < 600;
+      const padding = isMobile ? 16 : 60;
+      const topReserve = isMobile ? 40 : 55;
+      const bottomReserve = isMobile ? 55 : 65;
       const availW = mazeAreaW - padding * 2;
-      const availH = h - 130 - padding;
+      const availH = h - topReserve - bottomReserve;
       const cellSize = Math.floor(Math.min(availW / MAZE_SIZE, availH / MAZE_SIZE));
       const mazeW = cellSize * MAZE_SIZE;
       const mazeH = cellSize * MAZE_SIZE;
       const ox = Math.floor((mazeAreaW - mazeW) / 2);
-      const oy = Math.floor((h - mazeH) / 2) + 15;
+      const oy = topReserve + Math.floor((availH - mazeH) / 2);
 
       // ── Maze background ──
       ctx.fillStyle = '#111118';
@@ -1487,15 +1459,6 @@ export default function MazeRacePage() {
           }
         }
 
-        if (state === 'racing' && !agent.finished && processingRef.current) {
-          const spinAngle = (now / 600 + agent.id * 1.5) % (Math.PI * 2);
-          ctx.beginPath();
-          ctx.arc(ax, ay, cellSize * 0.38, spinAngle, spinAngle + Math.PI * 1.2);
-          ctx.strokeStyle = agent.color + '88';
-          ctx.lineWidth = 2;
-          ctx.lineCap = 'round';
-          ctx.stroke();
-        }
       }
 
       // ── Floating power-up notifications ──
@@ -1888,7 +1851,6 @@ export default function MazeRacePage() {
       }
 
       // ── HUD: Title ──
-      const isMobile = w < 600;
       ctx.fillStyle = '#ffffff';
       ctx.font = `bold ${isMobile ? 16 : 22}px "Courier New", monospace`;
       ctx.textAlign = 'center';
@@ -1898,7 +1860,7 @@ export default function MazeRacePage() {
       if (!isMobile) {
         ctx.font = '13px "Courier New", monospace';
         ctx.fillStyle = '#555';
-        ctx.fillText('Gemini Flash vs Gemini Flash vs Gemini Flash vs Gemini Flash', (showPov ? mazeAreaW : w) / 2, 36);
+        ctx.fillText('4 pathfinding bots race to the center  //  dodge enemies  //  grab power-ups', (showPov ? mazeAreaW : w) / 2, 36);
       }
 
       // ── HUD: Mute button ──
@@ -1942,7 +1904,7 @@ export default function MazeRacePage() {
         ctx.fillStyle = '#666';
         ctx.textAlign = 'right';
         ctx.textBaseline = 'top';
-        ctx.fillText(`Turn ${turn}`, w - 50, 12);
+        ctx.fillText(`Turn ${turn}`, (showPov ? mazeAreaW : w) - 50, 12);
       }
 
       // ── HUD: Your pick indicator ──
@@ -1965,7 +1927,7 @@ export default function MazeRacePage() {
           const col = i % 2;
           const row = Math.floor(i / 2);
           const sx = col * halfW + 10;
-          const sy = barY + row * 16;
+          const sy = barY + row * 18;
           const a = agents[i];
 
           ctx.beginPath();
@@ -2040,14 +2002,16 @@ export default function MazeRacePage() {
       if ((state === 'racing' || state === 'finished') && analyserRef.current && freqDataRef.current) {
         analyserRef.current.getByteFrequencyData(freqDataRef.current);
         const fd = freqDataRef.current;
-        const eqBars = 16;
-        const barW = isMobile ? 3 : 4;
-        const eqGap = isMobile ? 1 : 2;
-        const eqH = isMobile ? 30 : 50;
+        const eqH = showPov ? 60 : (isMobile ? 24 : 40);
+        // Match POV panel width when visible, otherwise fit in corner
+        const eqPanelW = showPov ? (POV_PANEL_W - 10) : (isMobile ? 80 : 120);
+        const eqBars = showPov ? 32 : 16;
+        const eqGap = 1;
+        const barW = Math.max(2, Math.floor((eqPanelW - (eqBars - 1) * eqGap) / eqBars));
         const eqTotalW = eqBars * (barW + eqGap) - eqGap;
-        const eqX = w - eqTotalW - 12;
-        const eqY = h - 12;
-        const step = Math.floor(fd.length / eqBars);
+        const eqX = showPov ? (mazeAreaW + 5 + (eqPanelW - eqTotalW) / 2) : (w - eqTotalW - 10);
+        const eqY = showPov ? (h - 8) : (barY - 14);
+        const step = Math.max(1, Math.floor(fd.length / eqBars));
         const eqColors = ['#ff4466', '#ff6644', '#ffaa22', '#ffdd00', '#aaff44', '#44ff88', '#44ddff', '#4488ff'];
 
         for (let i = 0; i < eqBars; i++) {
@@ -2072,16 +2036,18 @@ export default function MazeRacePage() {
         // Winner announcement
         ctx.save();
         ctx.shadowColor = winner.color;
-        ctx.shadowBlur = 30;
+        ctx.shadowBlur = isMobile ? 18 : 30;
         ctx.fillStyle = winner.color;
-        ctx.font = 'bold 52px "Courier New", monospace';
+        ctx.font = `bold ${isMobile ? 28 : 52}px "Courier New", monospace`;
         ctx.fillText(`${winner.name} WINS!`, w / 2, h / 2 - 50);
         ctx.restore();
 
         ctx.fillStyle = '#aaa';
-        ctx.font = '18px "Courier New", monospace';
+        ctx.font = `${isMobile ? 12 : 18}px "Courier New", monospace`;
         ctx.fillText(
-          `Reached the center in ${winner.history.length} moves (${turn} turns)`,
+          isMobile
+            ? `${winner.history.length} moves (${turn} turns)`
+            : `Reached the center in ${winner.history.length} moves (${turn} turns)`,
           w / 2,
           h / 2 - 10
         );
@@ -2090,7 +2056,7 @@ export default function MazeRacePage() {
         if (pickedWinnerRef.current !== null) {
           const pickedCfg = AGENT_CONFIGS[pickedWinnerRef.current];
           const correct = pickedWinnerRef.current === winner.id;
-          ctx.font = 'bold 18px "Courier New", monospace';
+          ctx.font = `bold ${isMobile ? 13 : 18}px "Courier New", monospace`;
           if (correct) {
             ctx.fillStyle = '#44ff66';
             ctx.fillText('YOU CALLED IT! Great prediction!', w / 2, h / 2 + 20);
@@ -2105,23 +2071,24 @@ export default function MazeRacePage() {
           .sort((a, b) => (a.finishOrder || 99) - (b.finishOrder || 99));
         const unfinished = agents.filter((a) => !a.finished);
 
-        let ry = h / 2 + 60;
-        ctx.font = '14px "Courier New", monospace';
+        let ry = h / 2 + (isMobile ? 30 : 60);
+        const lineGap = isMobile ? 18 : 22;
+        ctx.font = `${isMobile ? 11 : 14}px "Courier New", monospace`;
         for (const a of finishedAgents) {
           ctx.fillStyle = a.color;
           ctx.fillText(`#${a.finishOrder} ${a.name} — ${a.history.length} moves`, w / 2, ry);
-          ry += 22;
+          ry += lineGap;
         }
         for (const a of unfinished) {
           ctx.fillStyle = '#555';
           ctx.fillText(`-- ${a.name} — DNF (${a.history.length} moves)`, w / 2, ry);
-          ry += 22;
+          ry += lineGap;
         }
 
         const btnP = Math.sin(now / 500) * 0.15 + 0.85;
         ctx.fillStyle = `rgba(68,153,255,${btnP.toFixed(2)})`;
-        ctx.font = 'bold 18px "Courier New", monospace';
-        ctx.fillText('[ CLICK FOR NEW RACE ]', w / 2, ry + 25);
+        ctx.font = `bold ${isMobile ? 15 : 18}px "Courier New", monospace`;
+        ctx.fillText('[ TAP FOR NEW RACE ]', w / 2, ry + 20);
       }
 
       requestAnimationFrame(draw);
@@ -2138,12 +2105,18 @@ export default function MazeRacePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Cleanup audio on unmount
+  // Cleanup audio + AudioContext on unmount
   useEffect(() => {
     return () => {
       if (audioRef.current) {
         audioRef.current.pause();
         audioRef.current = null;
+      }
+      if (audioCtxRef.current) {
+        audioCtxRef.current.close().catch(() => {});
+        audioCtxRef.current = null;
+        analyserRef.current = null;
+        freqDataRef.current = null;
       }
     };
   }, []);
