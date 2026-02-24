@@ -1064,7 +1064,7 @@ export default function MazeRacePage() {
 
       // Logo image — responsive sizing
       const logo = logoRef.current;
-      const logoSize = mob ? Math.min(w * 0.5, 160) : 220;
+      const logoSize = mob ? Math.min(w * 0.85, 400) : 550;
       const logoY = mob ? h * 0.01 : h * 0.02;
       if (logo && logo.complete && logo.naturalWidth > 0) {
         const aspect = logo.naturalWidth / logo.naturalHeight;
