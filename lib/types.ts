@@ -53,4 +53,24 @@ export interface MoveRequest {
   currentDistance: number;
   moveOptions: MoveOption[];
   recentMoves: Direction[];
+  nearbyEnemies: NearbyEnemy[];
+  isScrambled: boolean;
+}
+
+// ─── Enemy types ──────────────────────────────────────────
+
+export type EnemyType = 'ghost' | 'freezer' | 'scrambler' | 'thief';
+
+export interface Enemy {
+  id: number;
+  type: EnemyType;
+  position: Position;
+  prevPosition: Position;
+  lastDirection: Direction | null;
+}
+
+export interface NearbyEnemy {
+  type: EnemyType;
+  position: Position;
+  distance: number;
 }

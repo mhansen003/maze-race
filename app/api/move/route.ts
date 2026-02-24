@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { MoveRequest, MoveOption, Direction } from '@/lib/types';
+import { MoveRequest, MoveOption, Direction, EnemyType } from '@/lib/types';
 
 const OPPOSITE: Record<Direction, Direction> = {
   up: 'down',
@@ -13,6 +13,13 @@ const ARROWS: Record<Direction, string> = {
   down: '↓',
   left: '←',
   right: '→',
+};
+
+const ENEMY_PENALTY_DESC: Record<EnemyType, string> = {
+  ghost: 'sends you back to START',
+  freezer: 'sends you back to START',
+  scrambler: 'sends you back to START',
+  thief: 'sends you back to START',
 };
 
 function buildPrompt(body: MoveRequest): string {
@@ -49,6 +56,20 @@ function buildPrompt(body: MoveRequest): string {
       ? body.recentMoves.slice(-8).join(', ')
       : 'none yet';
 
+  // Enemy awareness
+  let enemySection = '';
+  if (body.nearbyEnemies && body.nearbyEnemies.length > 0) {
+    const enemyLines = body.nearbyEnemies.map((e) =>
+      `  ⚠ ${e.type.toUpperCase()} at (${e.position.row},${e.position.col}) — distance ${e.distance} — ${ENEMY_PENALTY_DESC[e.type]}`
+    );
+    enemySection = `\n\nDANGER — ENEMIES NEARBY:\n${enemyLines.join('\n')}`;
+  }
+
+  // Scrambled warning
+  const scrambledNote = body.isScrambled
+    ? '\n\n⚠ WARNING: You are SCRAMBLED — your move will be randomized regardless of your choice.'
+    : '';
+
   return `You are "${body.agentName}" racing through a maze. ${body.personality}
 
 POSITION: (${pos.row}, ${pos.col})
@@ -57,11 +78,12 @@ GOAL: (${goal.row}, ${goal.col}) — ${goalDir} — distance ${body.currentDista
 YOUR OPTIONS:
 ${optionLines.join('\n')}
 
-Recent moves: ${recentStr}
+Recent moves: ${recentStr}${enemySection}${scrambledNote}
 
 RULES:
 - Pick FRESH paths over visited ones
 - Move TOWARD the goal when possible
+- AVOID enemies if you can see them nearby
 - Only go back if it is the ONLY option
 - Respond with a SINGLE WORD: ${body.moveOptions.map((o) => o.direction).join(', ')}`;
 }
@@ -102,7 +124,13 @@ function pickBest(options: MoveOption[]): Direction {
     if (a.timesVisited !== b.timesVisited) return a.timesVisited - b.timesVisited;
     return a.distanceToGoal - b.distanceToGoal;
   });
-  return sorted[0].direction;
+
+  // Random tie-breaking: collect all options with the same best score
+  const best = sorted[0];
+  const tied = sorted.filter(
+    (o) => o.timesVisited === best.timesVisited && o.distanceToGoal === best.distanceToGoal
+  );
+  return tied[Math.floor(Math.random() * tied.length)].direction;
 }
 
 export async function POST(req: NextRequest) {
