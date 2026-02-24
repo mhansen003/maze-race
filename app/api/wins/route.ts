@@ -3,6 +3,13 @@ import { kv } from '@vercel/kv';
 
 const AGENTS = ['blaze', 'frost', 'venom', 'sol'];
 
+const SEED_COUNTS: Record<string, number> = {
+  blaze: 42,
+  frost: 37,
+  venom: 45,
+  sol: 33,
+};
+
 export async function GET() {
   try {
     const pipeline = kv.pipeline();
@@ -11,15 +18,26 @@ export async function GET() {
     }
     const results = await pipeline.exec();
     const wins: Record<string, number> = {};
+    let allZero = true;
     AGENTS.forEach((name, i) => {
       wins[name] = (results[i] as number) || 0;
+      if (wins[name] > 0) allZero = false;
     });
+
+    // Auto-seed if no wins exist yet
+    if (allZero) {
+      const seedPipeline = kv.pipeline();
+      for (const name of AGENTS) {
+        seedPipeline.set(`wins:${name}`, SEED_COUNTS[name]);
+        wins[name] = SEED_COUNTS[name];
+      }
+      await seedPipeline.exec();
+    }
+
     return NextResponse.json(wins);
   } catch {
-    // KV not configured — return zeros
-    const wins: Record<string, number> = {};
-    for (const name of AGENTS) wins[name] = 0;
-    return NextResponse.json(wins);
+    // KV not configured — return seed counts as fallback
+    return NextResponse.json({ ...SEED_COUNTS });
   }
 }
 
