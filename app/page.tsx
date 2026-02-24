@@ -2702,7 +2702,7 @@ export default function MazeRacePage() {
         }
       }
 
-      // ── Rotating champion avatar (bottom-right) ──
+      // ── Champion avatar (bottom-right) ──
       if (pickedWinnerRef.current !== null && state === 'racing') {
         const champId = pickedWinnerRef.current;
         const champSprite = spritesRef.current[champId];
@@ -2711,10 +2711,8 @@ export default function MazeRacePage() {
           const champSize = isMobile ? 48 : 80;
           const champX = w - champSize / 2 - (isMobile ? 14 : 24);
           const champY = h - champSize / 2 - (isMobile ? 14 : 24);
-          const angle = now / 3000; // slow rotation
 
           ctx.save();
-          // Glow ring behind
           ctx.shadowColor = champCfg.color;
           ctx.shadowBlur = 12 + Math.sin(now / 500) * 6;
           ctx.beginPath();
@@ -2722,11 +2720,7 @@ export default function MazeRacePage() {
           ctx.strokeStyle = champCfg.color + '66';
           ctx.lineWidth = 2;
           ctx.stroke();
-
-          // Rotating sprite
-          ctx.translate(champX, champY);
-          ctx.rotate(angle);
-          ctx.drawImage(champSprite, -champSize / 2, -champSize / 2, champSize, champSize);
+          ctx.drawImage(champSprite, champX - champSize / 2, champY - champSize / 2, champSize, champSize);
           ctx.restore();
         }
       }
