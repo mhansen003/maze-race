@@ -1636,6 +1636,91 @@ export default function MazeRacePage() {
               }
             }
 
+            // Check for power-ups at this cell or adjacent side corridors
+            const fpvPowerUps = powerUpsRef.current;
+            for (const pu of fpvPowerUps) {
+              if (pu.collected) continue;
+              const puColor = POWERUP_COLORS[pu.type];
+              const puCx = (entityR.lx + entityR.rx) / 2;
+              const puCy = (entityR.ty + entityR.by) / 2;
+              const puR = entitySize * 0.4;
+
+              if (pu.position.row === cr && pu.position.col === cc) {
+                // Power-up directly ahead — draw with glow and shape
+                const puPulse = Math.sin(now / 350 + pu.id * 2) * 0.25 + 0.75;
+                const puGrad = ctx.createRadialGradient(puCx, puCy, 0, puCx, puCy, puR * 2 * puPulse);
+                puGrad.addColorStop(0, puColor + 'cc');
+                puGrad.addColorStop(1, puColor + '00');
+                ctx.beginPath();
+                ctx.arc(puCx, puCy, puR * 2 * puPulse, 0, Math.PI * 2);
+                ctx.fillStyle = puGrad;
+                ctx.fill();
+
+                // Distinct shape per type
+                ctx.fillStyle = puColor;
+                ctx.strokeStyle = puColor;
+                ctx.lineWidth = 1.5;
+                if (pu.type === 'speed') {
+                  // Lightning bolt
+                  const bz = puR * 0.8;
+                  ctx.beginPath();
+                  ctx.moveTo(puCx + bz * 0.1, puCy - bz);
+                  ctx.lineTo(puCx - bz * 0.35, puCy + bz * 0.05);
+                  ctx.lineTo(puCx + bz * 0.05, puCy + bz * 0.05);
+                  ctx.lineTo(puCx - bz * 0.1, puCy + bz);
+                  ctx.lineTo(puCx + bz * 0.35, puCy - bz * 0.05);
+                  ctx.lineTo(puCx - bz * 0.05, puCy - bz * 0.05);
+                  ctx.closePath();
+                  ctx.fill();
+                } else if (pu.type === 'shield') {
+                  // Shield ring with cross
+                  ctx.beginPath();
+                  ctx.arc(puCx, puCy, puR * 0.7, 0, Math.PI * 2);
+                  ctx.stroke();
+                  ctx.beginPath();
+                  ctx.moveTo(puCx, puCy - puR * 0.45);
+                  ctx.lineTo(puCx, puCy + puR * 0.45);
+                  ctx.moveTo(puCx - puR * 0.45, puCy);
+                  ctx.lineTo(puCx + puR * 0.45, puCy);
+                  ctx.stroke();
+                } else {
+                  // Magnet — 4-pointed star
+                  const ss = puR * 0.7;
+                  const si = puR * 0.25;
+                  ctx.beginPath();
+                  ctx.moveTo(puCx, puCy - ss);
+                  ctx.lineTo(puCx + si, puCy - si);
+                  ctx.lineTo(puCx + ss, puCy);
+                  ctx.lineTo(puCx + si, puCy + si);
+                  ctx.lineTo(puCx, puCy + ss);
+                  ctx.lineTo(puCx - si, puCy + si);
+                  ctx.lineTo(puCx - ss, puCy);
+                  ctx.lineTo(puCx - si, puCy - si);
+                  ctx.closePath();
+                  ctx.fill();
+                }
+              }
+
+              // Power-up in left side corridor
+              const puLeftR = cr + lv.dr;
+              const puLeftC = cc + lv.dc;
+              if (pu.position.row === puLeftR && pu.position.col === puLeftC && !cell.walls[wm.left]) {
+                ctx.beginPath();
+                ctx.arc(entityR.lx + entitySize * 0.3, puCy, entitySize * 0.2, 0, Math.PI * 2);
+                ctx.fillStyle = puColor + 'bb';
+                ctx.fill();
+              }
+              // Power-up in right side corridor
+              const puRightR = cr + rv.dr;
+              const puRightC = cc + rv.dc;
+              if (pu.position.row === puRightR && pu.position.col === puRightC && !cell.walls[wm.right]) {
+                ctx.beginPath();
+                ctx.arc(entityR.rx - entitySize * 0.3, puCy, entitySize * 0.2, 0, Math.PI * 2);
+                ctx.fillStyle = puColor + 'bb';
+                ctx.fill();
+              }
+            }
+
             // Check for other agents at this cell
             for (const other of agents) {
               if (other.id === agent.id || other.finished) continue;
