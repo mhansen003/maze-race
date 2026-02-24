@@ -406,6 +406,9 @@ export default function MazeRacePage() {
   const trackIndexRef = useRef(0);
   const TRACKS = ['/music.mp3', '/music2.mp3'];
   const mutedRef = useRef(false);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const freqDataRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
 
   // ─── Mute toggle ───────────────────────────────────────────
 
@@ -540,26 +543,16 @@ export default function MazeRacePage() {
 
   // ─── Game logic ──────────────────────────────────────────
 
-  async function processTurn() {
-    if (processingRef.current || stateRef.current !== 'racing') return;
-    processingRef.current = true;
-
+  async function fetchMoves() {
     const maze = mazeRef.current;
     const agents = agentsRef.current;
     const enemies = enemiesRef.current;
     const goal: Position = { row: CENTER, col: CENTER };
 
-    const active = agents.filter((a) => !a.finished);
-    if (active.length === 0) {
-      processingRef.current = false;
-      return;
-    }
+    const active = agents.filter((a) => !a.finished && a.frozenTurns <= 0);
+    if (active.length === 0) return [];
 
-    for (const enemy of enemies) {
-      enemy.prevPosition = { ...enemy.position };
-    }
-
-    const results = await Promise.all(
+    return await Promise.all(
       active.map(async (agent) => {
         const directions = getAvailableMoves(maze, agent.position);
         const lastMove = agent.history.length > 0 ? agent.history[agent.history.length - 1] : null;
@@ -606,20 +599,35 @@ export default function MazeRacePage() {
             body: JSON.stringify(body),
           });
           const data = await res.json();
-          return { agentId: agent.id, direction: data.direction as Direction, moveOptions };
+          return { agentId: agent.id, direction: data.direction as Direction };
         } catch {
           const best = [...moveOptions].sort((a, b) => {
             if (a.timesVisited === 0 && b.timesVisited > 0) return -1;
             if (b.timesVisited === 0 && a.timesVisited > 0) return 1;
             return a.distanceToGoal - b.distanceToGoal;
           });
-          return { agentId: agent.id, direction: best[0].direction, moveOptions };
+          return { agentId: agent.id, direction: best[0].direction };
         }
       })
     );
+  }
 
-    for (const agent of active) {
+  function applyMoves(results: { agentId: number; direction: Direction }[]) {
+    const maze = mazeRef.current;
+    const agents = agentsRef.current;
+    const enemies = enemiesRef.current;
+
+    // Decrement frozen/scrambled timers
+    for (const agent of agents) {
+      if (agent.frozenTurns > 0) agent.frozenTurns--;
+    }
+
+    // Set prevPosition for animation lerp
+    for (const agent of agents.filter((a) => !a.finished)) {
       agent.prevPosition = { ...agent.position };
+    }
+    for (const enemy of enemies) {
+      enemy.prevPosition = { ...enemy.position };
     }
 
     let finishCount = agents.filter((a) => a.finished).length;
@@ -653,7 +661,7 @@ export default function MazeRacePage() {
       }
     }
 
-    // Check power-up collection for all agents that moved
+    // Check power-up collection
     for (const move of results) {
       const agent = agents.find((a) => a.id === move.agentId);
       if (agent && !agent.finished) {
@@ -661,7 +669,7 @@ export default function MazeRacePage() {
       }
     }
 
-    // Speed boost: agents with speed get a bonus move
+    // Speed boost: bonus move for agents with speed
     for (const agent of agents) {
       if (agent.finished || agent.speedTurns <= 0) continue;
 
@@ -669,7 +677,6 @@ export default function MazeRacePage() {
       const lastMove = agent.history.length > 0 ? agent.history[agent.history.length - 1] : null;
       const goal: Position = { row: CENTER, col: CENTER };
 
-      // Pick best direction (unvisited + toward goal)
       const options = dirs.map((dir) => {
         let target = applyMove(agent.position, dir);
         const w = checkWrap(target, dir);
@@ -688,7 +695,6 @@ export default function MazeRacePage() {
       });
 
       if (options.length > 0) {
-        agent.prevPosition = { ...agent.position };
         let bonusPos = applyMove(agent.position, options[0].dir);
         const bw = checkWrap(bonusPos, options[0].dir);
         if (bw) bonusPos = bw;
@@ -719,14 +725,11 @@ export default function MazeRacePage() {
       if (agent.shieldTurns > 0) agent.shieldTurns--;
     }
 
-    // Respawn collected power-ups
     respawnCollectedPowerUps();
-
     moveEnemies(enemies, maze, agents);
-
     checkEnemyCollisions();
 
-    // Periodic shuffle — uncollected power-ups drift every 15 turns
+    // Periodic shuffle
     const nextTurn = turnRef.current + 1;
     if (nextTurn > 0 && nextTurn % 15 === 0) {
       for (const pu of powerUpsRef.current) {
@@ -738,7 +741,6 @@ export default function MazeRacePage() {
 
     moveTimeRef.current = performance.now();
     turnRef.current++;
-    processingRef.current = false;
   }
 
   function startRace() {
@@ -746,32 +748,56 @@ export default function MazeRacePage() {
     moveTimeRef.current = performance.now();
     gameLoopActiveRef.current = true;
 
-    // Start music — rotate between tracks
+    // Set up Web Audio analyser for equalizer visualization
+    if (!audioCtxRef.current) {
+      const actx = new AudioContext();
+      const analyser = actx.createAnalyser();
+      analyser.fftSize = 64;
+      analyser.smoothingTimeConstant = 0.8;
+      audioCtxRef.current = actx;
+      analyserRef.current = analyser;
+      freqDataRef.current = new Uint8Array(analyser.frequencyBinCount);
+    }
+
+    // Start music — rotate between tracks with analyser connected
     function playTrack() {
       const src = TRACKS[trackIndexRef.current % TRACKS.length];
       const audio = new Audio(src);
+      audio.crossOrigin = 'anonymous';
       audio.volume = 0.5;
       audio.muted = mutedRef.current;
       audio.addEventListener('ended', () => {
         trackIndexRef.current++;
         if (stateRef.current === 'racing') playTrack();
       });
+      // Connect to analyser
+      if (audioCtxRef.current && analyserRef.current) {
+        const source = audioCtxRef.current.createMediaElementSource(audio);
+        source.connect(analyserRef.current);
+        analyserRef.current.connect(audioCtxRef.current.destination);
+      }
       audioRef.current = audio;
       audio.play().catch(() => {});
     }
     if (audioRef.current) { audioRef.current.pause(); }
-    trackIndexRef.current = Math.random() < 0.5 ? 0 : 1; // random first song
+    trackIndexRef.current = Math.random() < 0.5 ? 0 : 1;
     playTrack();
 
-    // Async game loop — waits for each turn + animation before starting next
+    // Pipelined game loop — fetch next moves while current animation plays
     (async () => {
+      let results = await fetchMoves();
+
       while (gameLoopActiveRef.current) {
-        await processTurn();
-        const elapsed = performance.now() - moveTimeRef.current;
-        const remaining = ANIM_DURATION + MIN_TURN_GAP - elapsed;
-        if (remaining > 0) {
-          await new Promise((r) => setTimeout(r, remaining));
-        }
+        // Apply moves → starts animation from prevPosition → position
+        applyMoves(results);
+
+        // Fetch next moves while this animation plays
+        const [nextResults] = await Promise.all([
+          fetchMoves(),
+          new Promise((r) => setTimeout(r, ANIM_DURATION)),
+        ]);
+
+        results = nextResults;
       }
     })();
   }
@@ -802,17 +828,17 @@ export default function MazeRacePage() {
   // ─── Click handling with agent picking ────────────────────
 
   function getAgentCardBounds(w: number, h: number) {
-    const isMobile = w < 600;
-    const cardW = isMobile ? 80 : 110;
-    const cardH = isMobile ? 58 : 70;
-    const gap = isMobile ? 10 : 20;
+    const mob = w < 600;
+    const cardW = mob ? 72 : 110;
+    const cardH = mob ? 52 : 70;
+    const gap = mob ? 8 : 20;
 
-    if (isMobile) {
-      // 2×2 grid layout
+    if (mob) {
+      // 2×2 grid layout centered vertically
       const cols = 2;
       const totalW = cols * cardW + (cols - 1) * gap;
       const startX = (w - totalW) / 2;
-      const startY = h / 2;
+      const startY = h * 0.38;
       return AGENT_CONFIGS.map((_, i) => ({
         x: startX + (i % cols) * (cardW + gap),
         y: startY + Math.floor(i / cols) * (cardH + gap),
@@ -824,7 +850,7 @@ export default function MazeRacePage() {
     // Desktop: single row
     const totalW = AGENT_CONFIGS.length * cardW + (AGENT_CONFIGS.length - 1) * gap;
     const startX = (w - totalW) / 2;
-    const cardY = h / 2 + 12;
+    const cardY = h * 0.48;
     return AGENT_CONFIGS.map((_, i) => ({
       x: startX + i * (cardW + gap),
       y: cardY,
@@ -862,9 +888,9 @@ export default function MazeRacePage() {
 
       // Check if clicking the start button (only if a winner is picked)
       if (pickedWinnerRef.current !== null) {
-        const isMobile = w < 600;
-        const btnY = isMobile ? h / 2 + 150 : h / 2 + 120;
-        if (my >= btnY - 20 && my <= btnY + 20) {
+        const mob = w < 600;
+        const btnY = mob ? h * 0.72 : h * 0.72;
+        if (my >= btnY - 25 && my <= btnY + 25) {
           startRace();
         }
       }
@@ -883,18 +909,20 @@ export default function MazeRacePage() {
     handleInteraction(e.clientX - rect.left, e.clientY - rect.top, false);
   }
 
-  function handleTouchStart(e: React.TouchEvent<HTMLCanvasElement>) {
+  // Touch handlers — registered via useEffect with { passive: false } to allow preventDefault
+  const handleTouchStartRef = useRef((e: TouchEvent) => {
     e.preventDefault();
     const rect = canvasRef.current!.getBoundingClientRect();
     const touch = e.touches[0];
     handleInteraction(touch.clientX - rect.left, touch.clientY - rect.top, true);
-  }
+  });
 
-  function handleTouchMove(e: React.TouchEvent<HTMLCanvasElement>) {
+  const handleTouchMoveRef = useRef((e: TouchEvent) => {
+    e.preventDefault();
     const rect = canvasRef.current!.getBoundingClientRect();
     const touch = e.touches[0];
     handleInteraction(touch.clientX - rect.left, touch.clientY - rect.top, false);
-  }
+  });
 
   // ─── Rendering ───────────────────────────────────────────
 
@@ -913,6 +941,10 @@ export default function MazeRacePage() {
     }
     resize();
     window.addEventListener('resize', resize);
+
+    // Register touch listeners as non-passive so preventDefault works
+    canvas.addEventListener('touchstart', handleTouchStartRef.current, { passive: false });
+    canvas.addEventListener('touchmove', handleTouchMoveRef.current, { passive: false });
 
     let running = true;
 
@@ -956,6 +988,8 @@ export default function MazeRacePage() {
     // ─── Draw splash screen (fully opaque) ───────────────
 
     function drawSplash(w: number, h: number, now: number) {
+      const mob = w < 600;
+
       // Solid dark background
       ctx.fillStyle = '#08080e';
       ctx.fillRect(0, 0, w, h);
@@ -986,38 +1020,45 @@ export default function MazeRacePage() {
 
       ctx.textAlign = 'center';
 
-      // Title with glow
-      const titleY = h / 2 - 130;
+      // Title with glow — responsive sizing
+      const titleFontSize = mob ? 28 : 52;
+      const titleY = mob ? h * 0.1 : h * 0.2;
       ctx.save();
       ctx.shadowColor = '#4499ff';
-      ctx.shadowBlur = 30;
+      ctx.shadowBlur = mob ? 18 : 30;
       ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 52px "Courier New", monospace';
+      ctx.font = `bold ${titleFontSize}px "Courier New", monospace`;
       ctx.fillText('MAZE RACE', w / 2, titleY);
       ctx.restore();
 
       // Decorative line
-      const lineW = 300;
+      const lineW = mob ? w * 0.6 : 300;
       const lineGrad = ctx.createLinearGradient(w / 2 - lineW / 2, 0, w / 2 + lineW / 2, 0);
       lineGrad.addColorStop(0, 'rgba(68,153,255,0)');
       lineGrad.addColorStop(0.5, 'rgba(68,153,255,0.6)');
       lineGrad.addColorStop(1, 'rgba(68,153,255,0)');
       ctx.fillStyle = lineGrad;
-      ctx.fillRect(w / 2 - lineW / 2, titleY + 18, lineW, 1.5);
+      ctx.fillRect(w / 2 - lineW / 2, titleY + (mob ? 10 : 18), lineW, 1.5);
 
-      // Subtitle
+      // Subtitle — shorter on mobile
       ctx.fillStyle = '#6688aa';
-      ctx.font = '15px "Courier New", monospace';
-      ctx.fillText('4 AI agents  //  Gemini Flash  //  dodge enemies  //  reach the center', w / 2, titleY + 48);
+      if (mob) {
+        ctx.font = '10px "Courier New", monospace';
+        ctx.fillText('4 AI agents // dodge enemies', w / 2, titleY + 26);
+      } else {
+        ctx.font = '15px "Courier New", monospace';
+        ctx.fillText('4 AI agents  //  Gemini Flash  //  dodge enemies  //  reach the center', w / 2, titleY + 48);
+      }
 
       // "WHO WILL WIN?" prompt
+      const promptY = mob ? h * 0.28 : h * 0.38;
       ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 20px "Courier New", monospace';
-      ctx.fillText('WHO WILL WIN?', w / 2, h / 2 - 20);
+      ctx.font = `bold ${mob ? 15 : 20}px "Courier New", monospace`;
+      ctx.fillText('WHO WILL WIN?', w / 2, promptY);
 
       ctx.fillStyle = '#556677';
-      ctx.font = '13px "Courier New", monospace';
-      ctx.fillText('Pick your champion', w / 2, h / 2 + 2);
+      ctx.font = `${mob ? 10 : 13}px "Courier New", monospace`;
+      ctx.fillText('Pick your champion', w / 2, promptY + (mob ? 16 : 22));
 
       // Agent selection cards
       const bounds = getAgentCardBounds(w, h);
@@ -1063,8 +1104,9 @@ export default function MazeRacePage() {
 
         // Agent dot
         const dotX = b.x + b.w / 2;
-        const dotY = b.y + 24;
-        const dotPulse = isSelected ? Math.sin(now / 300) * 3 + 12 : 10;
+        const dotY = b.y + (mob ? 18 : 24);
+        const dotR = mob ? 7 : 10;
+        const dotPulse = isSelected ? Math.sin(now / 300) * 2 + dotR + 2 : dotR;
 
         if (isSelected) {
           const glow = ctx.createRadialGradient(dotX, dotY, 0, dotX, dotY, dotPulse + 5);
@@ -1083,13 +1125,13 @@ export default function MazeRacePage() {
 
         // Agent name
         ctx.fillStyle = isSelected ? cfg.color : '#aaaaaa';
-        ctx.font = `${isSelected ? 'bold ' : ''}13px "Courier New", monospace`;
-        ctx.fillText(cfg.name, dotX, b.y + b.h - 12);
+        ctx.font = `${isSelected ? 'bold ' : ''}${mob ? 11 : 13}px "Courier New", monospace`;
+        ctx.fillText(cfg.name, dotX, b.y + b.h - (mob ? 8 : 12));
       }
 
       // Start button (only if picked)
       if (picked !== null) {
-        const btnY = h / 2 + 120;
+        const btnY = h * 0.72;
         const btnPulse = Math.sin(now / 400) * 0.15 + 0.85;
         const pickedCfg = AGENT_CONFIGS[picked];
 
@@ -1097,57 +1139,14 @@ export default function MazeRacePage() {
         ctx.shadowColor = pickedCfg.color;
         ctx.shadowBlur = 15;
         ctx.fillStyle = pickedCfg.color + Math.floor(btnPulse * 255).toString(16).padStart(2, '0');
-        ctx.font = 'bold 20px "Courier New", monospace';
+        ctx.font = `bold ${mob ? 18 : 20}px "Courier New", monospace`;
         ctx.fillText(`[ START RACE ]`, w / 2, btnY);
         ctx.restore();
 
         ctx.fillStyle = '#556677';
-        ctx.font = '12px "Courier New", monospace';
-        ctx.fillText(`Your pick: ${pickedCfg.name}`, w / 2, btnY + 28);
+        ctx.font = `${mob ? 10 : 12}px "Courier New", monospace`;
+        ctx.fillText(`Your pick: ${pickedCfg.name}`, w / 2, btnY + (mob ? 22 : 28));
       }
-
-      // Hazard icons at the bottom
-      const infoY = h - 90;
-
-      // Enemy row
-      ctx.fillStyle = '#445566';
-      ctx.font = '10px "Courier New", monospace';
-      ctx.fillText('ENEMIES', w / 2 - 180, infoY);
-      for (let i = 0; i < ENEMY_TYPES.length; i++) {
-        const et = ENEMY_TYPES[i];
-        const ex = w / 2 - 130 + i * 70;
-        ctx.fillStyle = et.color;
-        ctx.beginPath();
-        ctx.arc(ex, infoY - 1, 4, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = '#778899';
-        ctx.fillText(et.label, ex + 10, infoY);
-      }
-
-      // Wrap-around row
-      ctx.fillStyle = '#445566';
-      ctx.fillText('WRAPS', w / 2 - 180, infoY + 22);
-      ctx.fillStyle = '#778899';
-      ctx.fillText('Some edges wrap to the opposite side', w / 2 - 100, infoY + 22);
-
-      // Power-up row
-      ctx.fillStyle = '#445566';
-      ctx.fillText('POWER-UPS', w / 2 - 180, infoY + 44);
-      for (let i = 0; i < POWERUP_DEFS.length; i++) {
-        const pd = POWERUP_DEFS[i];
-        const bx = w / 2 - 130 + i * 90;
-        ctx.fillStyle = pd.color;
-        ctx.beginPath();
-        ctx.arc(bx, infoY + 43, 4, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = '#778899';
-        ctx.fillText(pd.label, bx + 10, infoY + 44);
-      }
-
-      // Footer
-      ctx.fillStyle = '#333344';
-      ctx.font = '10px "Courier New", monospace';
-      ctx.fillText('Touch an enemy = back to start  |  Edges can wrap around', w / 2, h - 30);
     }
 
     function draw() {
@@ -1606,19 +1605,25 @@ export default function MazeRacePage() {
             const r1 = sRect(d + 1);
             const brightness = Math.max(0.12, 1 - d * 0.11);
 
-            // Left wall
+            // Left wall — brighter, blue tint
             if (cell.walls[wm.left]) {
-              const shade = Math.floor(40 * brightness);
-              ctx.fillStyle = `rgb(${shade},${shade},${Math.floor(shade * 1.4)})`;
+              const shade = Math.floor(65 * brightness);
+              ctx.fillStyle = `rgb(${Math.floor(shade * 0.7)},${Math.floor(shade * 0.8)},${shade})`;
               ctx.beginPath();
               ctx.moveTo(r0.lx, r0.ty); ctx.lineTo(r1.lx, r1.ty);
               ctx.lineTo(r1.lx, r1.by); ctx.lineTo(r0.lx, r0.by);
               ctx.closePath(); ctx.fill();
+              // Edge highlight
+              ctx.strokeStyle = `rgba(100,140,200,${0.2 * brightness})`;
+              ctx.lineWidth = 1;
+              ctx.beginPath();
+              ctx.moveTo(r0.lx, r0.ty); ctx.lineTo(r1.lx, r1.ty);
+              ctx.moveTo(r0.lx, r0.by); ctx.lineTo(r1.lx, r1.by);
+              ctx.stroke();
             } else if (d > 0) {
               // Side opening — draw recessed wall edges
-              const shade = Math.floor(20 * brightness);
-              ctx.fillStyle = `rgb(${shade},${shade},${Math.floor(shade * 1.2)})`;
-              // Back edge of opening
+              const shade = Math.floor(30 * brightness);
+              ctx.fillStyle = `rgb(${shade},${shade},${Math.floor(shade * 1.3)})`;
               const rPrev = sRect(d - 1);
               ctx.beginPath();
               ctx.moveTo(r0.lx, r0.ty); ctx.lineTo(r0.lx, r0.by);
@@ -1626,17 +1631,24 @@ export default function MazeRacePage() {
               ctx.closePath(); ctx.fill();
             }
 
-            // Right wall
+            // Right wall — slightly darker than left for depth
             if (cell.walls[wm.right]) {
-              const shade = Math.floor(35 * brightness);
-              ctx.fillStyle = `rgb(${shade},${shade},${Math.floor(shade * 1.3)})`;
+              const shade = Math.floor(50 * brightness);
+              ctx.fillStyle = `rgb(${Math.floor(shade * 0.6)},${Math.floor(shade * 0.7)},${shade})`;
               ctx.beginPath();
               ctx.moveTo(r0.rx, r0.ty); ctx.lineTo(r1.rx, r1.ty);
               ctx.lineTo(r1.rx, r1.by); ctx.lineTo(r0.rx, r0.by);
               ctx.closePath(); ctx.fill();
+              // Edge highlight
+              ctx.strokeStyle = `rgba(80,110,160,${0.15 * brightness})`;
+              ctx.lineWidth = 1;
+              ctx.beginPath();
+              ctx.moveTo(r0.rx, r0.ty); ctx.lineTo(r1.rx, r1.ty);
+              ctx.moveTo(r0.rx, r0.by); ctx.lineTo(r1.rx, r1.by);
+              ctx.stroke();
             } else if (d > 0) {
-              const shade = Math.floor(20 * brightness);
-              ctx.fillStyle = `rgb(${shade},${shade},${Math.floor(shade * 1.2)})`;
+              const shade = Math.floor(25 * brightness);
+              ctx.fillStyle = `rgb(${shade},${shade},${Math.floor(shade * 1.3)})`;
               const rPrev = sRect(d - 1);
               ctx.beginPath();
               ctx.moveTo(r0.rx, r0.ty); ctx.lineTo(r0.rx, r0.by);
@@ -1644,21 +1656,28 @@ export default function MazeRacePage() {
               ctx.closePath(); ctx.fill();
             }
 
-            // Ceiling segment
-            const ceilShade = Math.floor(18 * brightness);
-            ctx.fillStyle = `rgb(${ceilShade},${ceilShade},${Math.floor(ceilShade * 1.1)})`;
+            // Ceiling segment — dark with subtle blue
+            const ceilShade = Math.floor(22 * brightness);
+            ctx.fillStyle = `rgb(${Math.floor(ceilShade * 0.8)},${Math.floor(ceilShade * 0.8)},${ceilShade})`;
             ctx.beginPath();
             ctx.moveTo(r0.lx, r0.ty); ctx.lineTo(r1.lx, r1.ty);
             ctx.lineTo(r1.rx, r1.ty); ctx.lineTo(r0.rx, r0.ty);
             ctx.closePath(); ctx.fill();
 
-            // Floor segment
-            const floorShade = Math.floor(14 * brightness);
-            ctx.fillStyle = `rgb(${floorShade},${Math.floor(floorShade * 1.1)},${floorShade})`;
+            // Floor segment — warmer tone, more visible
+            const floorShade = Math.floor(25 * brightness);
+            ctx.fillStyle = `rgb(${floorShade},${Math.floor(floorShade * 0.85)},${Math.floor(floorShade * 0.7)})`;
             ctx.beginPath();
             ctx.moveTo(r0.lx, r0.by); ctx.lineTo(r1.lx, r1.by);
             ctx.lineTo(r1.rx, r1.by); ctx.lineTo(r0.rx, r0.by);
             ctx.closePath(); ctx.fill();
+
+            // Floor grid line for depth cue
+            ctx.strokeStyle = `rgba(60,50,40,${0.25 * brightness})`;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(r1.lx, r1.by); ctx.lineTo(r1.rx, r1.by);
+            ctx.stroke();
 
             // Draw entities at this depth
             const entityR = sRect(d + 0.5);
@@ -1812,11 +1831,15 @@ export default function MazeRacePage() {
               ctx.fill();
             }
 
-            // Forward wall (end of corridor)
+            // Forward wall (end of corridor) — distinct purple tint
             if (cell.walls[wm.forward]) {
-              const shade = Math.floor(28 * brightness);
-              ctx.fillStyle = `rgb(${shade},${shade},${Math.floor(shade * 1.2)})`;
+              const shade = Math.floor(45 * brightness);
+              ctx.fillStyle = `rgb(${Math.floor(shade * 0.8)},${Math.floor(shade * 0.7)},${shade})`;
               ctx.fillRect(r1.lx, r1.ty, r1.rx - r1.lx, r1.by - r1.ty);
+              // Border for the wall face
+              ctx.strokeStyle = `rgba(100,90,140,${0.2 * brightness})`;
+              ctx.lineWidth = 1;
+              ctx.strokeRect(r1.lx, r1.ty, r1.rx - r1.lx, r1.by - r1.ty);
               hitEnd = true;
             }
           }
@@ -1934,8 +1957,7 @@ export default function MazeRacePage() {
 
       // ── HUD: Agent status bar ──
       ctx.textBaseline = 'middle';
-      const logH = isMobile ? 50 : 72;
-      const barY = h - logH - (isMobile ? 28 : 32);
+      const barY = h - (isMobile ? 40 : 50);
       if (isMobile) {
         // 2×2 compact grid
         const halfW = mazeAreaW / 2;
@@ -2014,6 +2036,30 @@ export default function MazeRacePage() {
       }
 
 
+      // ── Equalizer visualization ──
+      if ((state === 'racing' || state === 'finished') && analyserRef.current && freqDataRef.current) {
+        analyserRef.current.getByteFrequencyData(freqDataRef.current);
+        const fd = freqDataRef.current;
+        const eqBars = 16;
+        const barW = isMobile ? 3 : 4;
+        const eqGap = isMobile ? 1 : 2;
+        const eqH = isMobile ? 30 : 50;
+        const eqTotalW = eqBars * (barW + eqGap) - eqGap;
+        const eqX = w - eqTotalW - 12;
+        const eqY = h - 12;
+        const step = Math.floor(fd.length / eqBars);
+        const eqColors = ['#ff4466', '#ff6644', '#ffaa22', '#ffdd00', '#aaff44', '#44ff88', '#44ddff', '#4488ff'];
+
+        for (let i = 0; i < eqBars; i++) {
+          const val = fd[i * step] / 255;
+          const barH = Math.max(2, val * eqH);
+          const colorIdx = Math.floor((i / eqBars) * eqColors.length);
+          const alpha = mutedRef.current ? 0.15 : 0.4 + val * 0.5;
+          ctx.fillStyle = eqColors[colorIdx] + Math.floor(alpha * 255).toString(16).padStart(2, '0');
+          ctx.fillRect(eqX + i * (barW + eqGap), eqY - barH, barW, barH);
+        }
+      }
+
       // ── Finished overlay ──
       ctx.textBaseline = 'alphabetic';
 
@@ -2086,6 +2132,8 @@ export default function MazeRacePage() {
     return () => {
       running = false;
       window.removeEventListener('resize', resize);
+      canvas.removeEventListener('touchstart', handleTouchStartRef.current);
+      canvas.removeEventListener('touchmove', handleTouchMoveRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -2105,8 +2153,6 @@ export default function MazeRacePage() {
       ref={canvasRef}
       onClick={handleClick}
       onMouseMove={handleMouseMove}
-      onTouchStart={handleTouchStart}
-      onTouchMove={handleTouchMove}
       style={{ display: 'block', cursor: 'pointer', touchAction: 'none' }}
     />
   );
