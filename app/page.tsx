@@ -398,6 +398,16 @@ export default function MazeRacePage() {
   // Floating notifications for power-up pickups
   const notificationsRef = useRef<{ text: string; color: string; agentColor: string; time: number; pos: Position }[]>([]);
 
+  // AI thought log — ring buffer of recent decisions
+  const LOG_MAX = 24;
+  const thoughtLogRef = useRef<{ agentName: string; color: string; text: string; turn: number }[]>([]);
+
+  function addThought(agentName: string, color: string, text: string) {
+    const log = thoughtLogRef.current;
+    log.push({ agentName, color, text, turn: turnRef.current });
+    if (log.length > LOG_MAX) log.shift();
+  }
+
   // Splash / pick-your-winner state
   const mouseRef = useRef({ x: 0, y: 0 });
   const pickedWinnerRef = useRef<number | null>(null); // agent id
@@ -422,8 +432,9 @@ export default function MazeRacePage() {
 
         if (sameCellNow || crossedPaths) {
           if (agent.shieldTurns > 0) {
-            // Shield absorbs the hit — enemy just passes through
+            addThought(agent.name, agent.color, `🛡 Shield blocked ${enemy.type}!`);
           } else {
+            addThought(agent.name, agent.color, `💀 Hit by ${enemy.type}! Back to start...`);
             respawnAgent(agent, currentTurn);
           }
         }
@@ -460,6 +471,7 @@ export default function MazeRacePage() {
       pu.collected = true;
       pu.respawnAt = currentTurn + 10; // respawn after 10 turns
       const puDef = POWERUP_DEFS.find((d) => d.type === pu.type)!;
+      addThought(agent.name, agent.color, `✨ Grabbed ${puDef.label}!`);
       notificationsRef.current.push({
         text: `${agent.name} +${puDef.label.toUpperCase()}`,
         color: puDef.color,
@@ -589,14 +601,14 @@ export default function MazeRacePage() {
             body: JSON.stringify(body),
           });
           const data = await res.json();
-          return { agentId: agent.id, direction: data.direction as Direction };
+          return { agentId: agent.id, direction: data.direction as Direction, moveOptions };
         } catch {
           const best = [...moveOptions].sort((a, b) => {
             if (a.timesVisited === 0 && b.timesVisited > 0) return -1;
             if (b.timesVisited === 0 && a.timesVisited > 0) return 1;
             return a.distanceToGoal - b.distanceToGoal;
           });
-          return { agentId: agent.id, direction: best[0].direction };
+          return { agentId: agent.id, direction: best[0].direction, moveOptions };
         }
       })
     );
@@ -611,11 +623,38 @@ export default function MazeRacePage() {
       const agent = agents.find((a) => a.id === move.agentId);
       if (!agent || agent.finished) continue;
 
+      // Build thought log entry
+      const chosen = move.moveOptions.find((o) => o.direction === move.direction);
+      const others = move.moveOptions.filter((o) => o.direction !== move.direction);
+      const ARROWS: Record<Direction, string> = { up: '↑', down: '↓', left: '←', right: '→' };
+      let thought = `${ARROWS[move.direction]} ${move.direction.toUpperCase()}`;
+      if (chosen) {
+        const dist = chosen.distanceToGoal;
+        if (chosen.timesVisited === 0) thought += ' (fresh';
+        else thought += ` (visited ${chosen.timesVisited}x`;
+        thought += `, d:${dist})`;
+      }
+      if (others.length > 0) {
+        const skipped = others.map((o) => {
+          let s = ARROWS[o.direction];
+          if (o.timesVisited > 0) s += `${o.timesVisited}x`;
+          if (o.isReverse) s += '↩';
+          return s;
+        }).join(' ');
+        thought += ` skip ${skipped}`;
+      }
+      // Add context notes
+      const nearbyE = enemies.filter((e) => manhattan(agent.position, e.position) <= ENEMY_DETECT_RANGE);
+      if (nearbyE.length > 0) thought += ' ⚠enemy';
+      if (agent.shieldTurns > 0) thought += ' 🛡';
+      if (agent.speedTurns > 0) thought += ' ⚡';
+      addThought(agent.name, agent.color, thought);
+
       const available = getAvailableMoves(maze, agent.position);
       if (available.includes(move.direction)) {
         let newPos = applyMove(agent.position, move.direction);
         const wrapped = checkWrap(newPos, move.direction);
-        if (wrapped) newPos = wrapped;
+        if (wrapped) { newPos = wrapped; addThought(agent.name, agent.color, '↪ WRAP to other side'); }
         agent.position = newPos;
         agent.history.push(move.direction);
         agent.trail.push({ ...agent.position });
@@ -627,6 +666,7 @@ export default function MazeRacePage() {
           finishCount++;
           agent.finished = true;
           agent.finishOrder = finishCount;
+          addThought(agent.name, agent.color, '🏁 REACHED THE CENTER!');
           if (finishCount === 1) {
             winnerRef.current = agent;
             stateRef.current = 'finished';
@@ -764,6 +804,8 @@ export default function MazeRacePage() {
     processingRef.current = false;
     moveTimeRef.current = 0;
     pickedWinnerRef.current = null;
+    thoughtLogRef.current = [];
+    notificationsRef.current = [];
     stateRef.current = 'ready';
 
     // Stop music
@@ -1829,8 +1871,8 @@ export default function MazeRacePage() {
 
       // ── HUD: Agent status bar ──
       ctx.textBaseline = 'middle';
-      const barY = h - 28;
-      const segW = w / 4;
+      const barY = h - 100;
+      const segW = mazeAreaW / 4;
       for (let i = 0; i < agents.length; i++) {
         const sx = segW * i + segW / 2;
         const a = agents[i];
@@ -1862,6 +1904,53 @@ export default function MazeRacePage() {
         } else {
           ctx.fillStyle = '#666';
           ctx.fillText(`${a.history.length} moves`, sx + 22, barY);
+        }
+      }
+
+      // ── Thought log ──
+      if (state === 'racing' || state === 'finished') {
+        const logX = 8;
+        const logW = mazeAreaW - 16;
+        const logH = 72;
+        const logY = h - logH - 4;
+        const lineH = 13;
+        const maxLines = Math.floor(logH / lineH);
+
+        // Semi-transparent background
+        ctx.fillStyle = 'rgba(5,5,10,0.75)';
+        ctx.fillRect(logX, logY, logW, logH);
+        ctx.strokeStyle = '#222233';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(logX, logY, logW, logH);
+
+        // "AI THOUGHTS" label
+        ctx.fillStyle = '#334455';
+        ctx.font = '9px "Courier New", monospace';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        ctx.fillText('AI THOUGHTS', logX + 4, logY + 2);
+
+        // Show most recent entries
+        const log = thoughtLogRef.current;
+        const startIdx = Math.max(0, log.length - maxLines);
+        ctx.font = '10px "Courier New", monospace';
+        for (let li = startIdx; li < log.length; li++) {
+          const entry = log[li];
+          const lineY = logY + 13 + (li - startIdx) * lineH;
+          const age = log.length - li;
+          const alpha = Math.max(0.3, 1 - age * 0.08);
+
+          // Agent name in color
+          ctx.globalAlpha = alpha;
+          ctx.fillStyle = entry.color;
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'top';
+          ctx.fillText(entry.agentName, logX + 4, lineY);
+
+          // Thought text in gray
+          ctx.fillStyle = '#99aabb';
+          ctx.fillText(entry.text, logX + 52, lineY);
+          ctx.globalAlpha = 1;
         }
       }
 
