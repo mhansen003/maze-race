@@ -34,6 +34,7 @@ export interface AgentConfig {
   glowColor: string;
   personality: string;
   startPos: Position;
+  sprite?: string; // path to character sprite image
 }
 
 export interface MoveOption {

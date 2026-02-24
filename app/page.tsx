@@ -47,6 +47,7 @@ const AGENT_CONFIGS: AgentConfig[] = [
     personality:
       'You are bold and decisive. Pick fresh paths over visited ones. Move toward the goal when you can.',
     startPos: { row: 0, col: 0 },
+    sprite: '/char-red.png',
   },
   {
     id: 1,
@@ -56,6 +57,7 @@ const AGENT_CONFIGS: AgentConfig[] = [
     personality:
       'You are calm and calculated. Pick fresh paths over visited ones. Move toward the goal when you can.',
     startPos: { row: 0, col: MAZE_SIZE - 1 },
+    sprite: '/char-blue.png',
   },
   {
     id: 2,
@@ -65,6 +67,7 @@ const AGENT_CONFIGS: AgentConfig[] = [
     personality:
       'You are sharp and tenacious. Pick fresh paths over visited ones. Move toward the goal when you can.',
     startPos: { row: MAZE_SIZE - 1, col: 0 },
+    sprite: '/char-green.png',
   },
   {
     id: 3,
@@ -73,6 +76,7 @@ const AGENT_CONFIGS: AgentConfig[] = [
     glowColor: 'rgba(255,204,0,0.5)',
     personality:
       'You are quick and instinctive. Pick fresh paths over visited ones. Move toward the goal when you can.',
+    sprite: '/char-yellow.png',
     startPos: { row: MAZE_SIZE - 1, col: MAZE_SIZE - 1 },
   },
 ];
@@ -424,6 +428,18 @@ export default function MazeRacePage() {
   const audioCtxRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const freqDataRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
+
+  // Preloaded character sprite images (keyed by agent id)
+  const spritesRef = useRef<Record<number, HTMLImageElement>>({});
+  if (typeof window !== 'undefined' && Object.keys(spritesRef.current).length === 0) {
+    for (const cfg of AGENT_CONFIGS) {
+      if (cfg.sprite) {
+        const img = new Image();
+        img.src = cfg.sprite;
+        spritesRef.current[cfg.id] = img;
+      }
+    }
+  }
 
   // ─── Mute toggle ───────────────────────────────────────────
 
@@ -1071,31 +1087,40 @@ export default function MazeRacePage() {
         ctx.fill();
         ctx.stroke();
 
-        // Agent dot
-        const dotX = b.x + b.w / 2;
-        const dotY = b.y + (mob ? 18 : 24);
-        const dotR = mob ? 7 : 10;
-        const dotPulse = isSelected ? Math.sin(now / 300) * 2 + dotR + 2 : dotR;
+        // Agent avatar (sprite or dot fallback)
+        const avatarX = b.x + b.w / 2;
+        const avatarY = b.y + (mob ? 22 : 30);
+        const spriteImg = spritesRef.current[cfg.id];
+        const avatarSize = mob ? 28 : 40;
+        const avatarPulse = isSelected ? 1 + Math.sin(now / 300) * 0.1 : 1;
 
         if (isSelected) {
-          const glow = ctx.createRadialGradient(dotX, dotY, 0, dotX, dotY, dotPulse + 5);
+          const glow = ctx.createRadialGradient(avatarX, avatarY, 0, avatarX, avatarY, avatarSize * 0.7);
           glow.addColorStop(0, cfg.glowColor);
           glow.addColorStop(1, 'rgba(0,0,0,0)');
           ctx.beginPath();
-          ctx.arc(dotX, dotY, dotPulse + 5, 0, Math.PI * 2);
+          ctx.arc(avatarX, avatarY, avatarSize * 0.7, 0, Math.PI * 2);
           ctx.fillStyle = glow;
           ctx.fill();
         }
 
-        ctx.beginPath();
-        ctx.arc(dotX, dotY, dotPulse, 0, Math.PI * 2);
-        ctx.fillStyle = cfg.color;
-        ctx.fill();
+        if (spriteImg && spriteImg.complete && spriteImg.naturalWidth > 0) {
+          const drawSize = avatarSize * avatarPulse;
+          ctx.drawImage(spriteImg, avatarX - drawSize / 2, avatarY - drawSize / 2, drawSize, drawSize);
+        } else {
+          // Fallback dot for agents without sprites
+          const dotR = mob ? 7 : 10;
+          const dotPulse = isSelected ? Math.sin(now / 300) * 2 + dotR + 2 : dotR;
+          ctx.beginPath();
+          ctx.arc(avatarX, avatarY, dotPulse, 0, Math.PI * 2);
+          ctx.fillStyle = cfg.color;
+          ctx.fill();
+        }
 
         // Agent name
         ctx.fillStyle = isSelected ? cfg.color : '#aaaaaa';
         ctx.font = `${isSelected ? 'bold ' : ''}${mob ? 11 : 13}px "Courier New", monospace`;
-        ctx.fillText(cfg.name, dotX, b.y + b.h - (mob ? 8 : 12));
+        ctx.fillText(cfg.name, avatarX, b.y + b.h - (mob ? 8 : 12));
       }
 
       // Start button (only if picked)
@@ -1441,10 +1466,16 @@ export default function MazeRacePage() {
         ctx.fillStyle = agentGlow;
         ctx.fill();
 
-        ctx.beginPath();
-        ctx.arc(ax, ay, cellSize * 0.28, 0, Math.PI * 2);
-        ctx.fillStyle = agent.color;
-        ctx.fill();
+        const spriteImg = spritesRef.current[agent.id];
+        if (spriteImg && spriteImg.complete && spriteImg.naturalWidth > 0) {
+          const sprSize = cellSize * 0.75;
+          ctx.drawImage(spriteImg, ax - sprSize / 2, ay - sprSize / 2, sprSize, sprSize);
+        } else {
+          ctx.beginPath();
+          ctx.arc(ax, ay, cellSize * 0.28, 0, Math.PI * 2);
+          ctx.fillStyle = agent.color;
+          ctx.fill();
+        }
 
         // Shield indicator: cyan bubble
         if (agent.shieldTurns > 0) {
@@ -2019,15 +2050,20 @@ export default function MazeRacePage() {
           const sy = barY + row * 18;
           const a = agents[i];
 
-          ctx.beginPath();
-          ctx.arc(sx, sy, 3, 0, Math.PI * 2);
-          ctx.fillStyle = a.color;
-          ctx.fill();
+          const hudSprite = spritesRef.current[a.id];
+          if (hudSprite && hudSprite.complete && hudSprite.naturalWidth > 0) {
+            ctx.drawImage(hudSprite, sx - 5, sy - 7, 14, 14);
+          } else {
+            ctx.beginPath();
+            ctx.arc(sx, sy, 3, 0, Math.PI * 2);
+            ctx.fillStyle = a.color;
+            ctx.fill();
+          }
 
           ctx.fillStyle = a.color;
           ctx.font = 'bold 10px "Courier New", monospace';
           ctx.textAlign = 'left';
-          ctx.fillText(a.name, sx + 6, sy);
+          ctx.fillText(a.name, sx + 12, sy);
 
           ctx.font = '9px "Courier New", monospace';
           const respawnAge = turn - a.respawnTurn;
@@ -2055,15 +2091,20 @@ export default function MazeRacePage() {
           const sx = segW * i + segW / 2;
           const a = agents[i];
 
-          ctx.beginPath();
-          ctx.arc(sx - 50, barY, 5, 0, Math.PI * 2);
-          ctx.fillStyle = a.color;
-          ctx.fill();
+          const hudSprite = spritesRef.current[a.id];
+          if (hudSprite && hudSprite.complete && hudSprite.naturalWidth > 0) {
+            ctx.drawImage(hudSprite, sx - 56, barY - 9, 18, 18);
+          } else {
+            ctx.beginPath();
+            ctx.arc(sx - 50, barY, 5, 0, Math.PI * 2);
+            ctx.fillStyle = a.color;
+            ctx.fill();
+          }
 
           ctx.fillStyle = a.color;
           ctx.font = 'bold 13px "Courier New", monospace';
           ctx.textAlign = 'left';
-          ctx.fillText(a.name, sx - 40, barY);
+          ctx.fillText(a.name, sx - 34, barY);
 
           ctx.font = '12px "Courier New", monospace';
           const respawnAge = turn - a.respawnTurn;
@@ -2122,7 +2163,13 @@ export default function MazeRacePage() {
 
         ctx.textAlign = 'center';
 
-        // Winner announcement
+        // Winner sprite + announcement
+        const winSprite = spritesRef.current[winner.id];
+        if (winSprite && winSprite.complete && winSprite.naturalWidth > 0) {
+          const winSize = isMobile ? 64 : 100;
+          ctx.drawImage(winSprite, w / 2 - winSize / 2, h / 2 - (isMobile ? 130 : 170), winSize, winSize);
+        }
+
         ctx.save();
         ctx.shadowColor = winner.color;
         ctx.shadowBlur = isMobile ? 18 : 30;
