@@ -205,6 +205,7 @@ interface AnimAgent {
   statusEffectTurn: number;
   respawnTurn: number;
   deathPos: Position | null; // where agent was eaten (for flash effect)
+  teleportTurn: number; // turn when last teleported (for POV flash)
   speedTurns: number;
   shieldTurns: number;
 }
@@ -228,6 +229,7 @@ function createAgents(): AnimAgent[] {
       statusEffectTurn: 0,
       respawnTurn: -99,
       deathPos: null,
+      teleportTurn: -99,
       speedTurns: 0,
       shieldTurns: 0,
     };
@@ -550,7 +552,7 @@ export default function MazeRacePage() {
       // Collect it
       playSfx('/sfx-powerup.mp3');
       pu.collected = true;
-      pu.respawnAt = currentTurn + 10; // respawn after 10 turns
+      pu.respawnAt = currentTurn + 30 + Math.floor(Math.random() * 20); // 30-50 turns (~7-11s)
       const puDef = POWERUP_DEFS.find((d) => d.type === pu.type)!;
       notificationsRef.current.push({
         text: `${agent.name} +${puDef.label.toUpperCase()}`,
@@ -700,7 +702,7 @@ export default function MazeRacePage() {
       if (available.includes(move.direction)) {
         let newPos = applyMove(agent.position, move.direction);
         const wrapped = checkWrap(newPos, move.direction);
-        if (wrapped) { newPos = wrapped; playSfx('/sfx-teleport.mp3'); }
+        if (wrapped) { newPos = wrapped; playSfx('/sfx-teleport.mp3'); agent.teleportTurn = turnRef.current; }
         agent.position = newPos;
         agent.history.push(move.direction);
         agent.trail.push({ ...agent.position });
@@ -759,7 +761,7 @@ export default function MazeRacePage() {
       if (options.length > 0) {
         let bonusPos = applyMove(agent.position, options[0].dir);
         const bw = checkWrap(bonusPos, options[0].dir);
-        if (bw) { bonusPos = bw; playSfx('/sfx-teleport.mp3'); }
+        if (bw) { bonusPos = bw; playSfx('/sfx-teleport.mp3'); agent.teleportTurn = turnRef.current; }
         agent.position = bonusPos;
         agent.history.push(options[0].dir);
         agent.trail.push({ ...agent.position });
@@ -2021,6 +2023,14 @@ export default function MazeRacePage() {
               ctx.fillStyle = 'rgba(100,200,255,0.8)';
               ctx.fill();
             }
+          }
+
+          // Teleport white flash overlay
+          const teleAge = turn - agent.teleportTurn;
+          if (teleAge >= 0 && teleAge < 4) {
+            const flashAlpha = (1 - teleAge / 4) * 0.8;
+            ctx.fillStyle = `rgba(255,255,255,${flashAlpha.toFixed(2)})`;
+            ctx.fillRect(povX, vpY, povW, povH);
           }
 
           ctx.restore(); // unclip
