@@ -868,7 +868,7 @@ export default function MazeRacePage() {
       const cols = 2;
       const totalW = cols * cardW + (cols - 1) * gap;
       const startX = (w - totalW) / 2;
-      const startY = h * 0.22;
+      const startY = h * 0.24;
       return AGENT_CONFIGS.map((_, i) => ({
         x: startX + (i % cols) * (cardW + gap),
         y: startY + Math.floor(i / cols) * (cardH + gap),
@@ -880,7 +880,7 @@ export default function MazeRacePage() {
     // Desktop: single row
     const totalW = AGENT_CONFIGS.length * cardW + (AGENT_CONFIGS.length - 1) * gap;
     const startX = (w - totalW) / 2;
-    const cardY = h * 0.35;
+    const cardY = h * 0.3;
     return AGENT_CONFIGS.map((_, i) => ({
       x: startX + i * (cardW + gap),
       y: cardY,
@@ -1023,7 +1023,7 @@ export default function MazeRacePage() {
 
       // Title with glow — responsive sizing
       const titleFontSize = mob ? 28 : 52;
-      const titleY = mob ? h * 0.1 : h * 0.2;
+      const titleY = mob ? h * 0.05 : h * 0.1;
       ctx.save();
       ctx.shadowColor = '#4499ff';
       ctx.shadowBlur = mob ? 18 : 30;
@@ -1052,7 +1052,7 @@ export default function MazeRacePage() {
       }
 
       // "WHO WILL WIN?" prompt
-      const promptY = mob ? h * 0.28 : h * 0.38;
+      const promptY = mob ? h * 0.15 : h * 0.22;
       ctx.fillStyle = '#ffffff';
       ctx.font = `bold ${mob ? 15 : 20}px "Courier New", monospace`;
       ctx.fillText('WHO WILL WIN?', w / 2, promptY);
