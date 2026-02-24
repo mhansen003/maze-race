@@ -9,12 +9,10 @@ import { generateMaze, getAvailableMoves, applyMove } from '@/lib/maze';
 const MAZE_SIZE = 25;
 const CENTER = Math.floor(MAZE_SIZE / 2); // 12
 const ANIM_DURATION = 320; // shorter for snappier movement
-const MIN_TURN_GAP = 80;  // minimum pause between moves so they're visually distinct
+const MIN_TURN_GAP = 0;   // no pause — continuous flowing movement
 const ENEMY_DETECT_RANGE = 3;
-const NUM_TELEPORT_PAIRS = 3;
 const NUM_POWERUPS = 3;
-
-const TELEPORT_COLORS = ['#ff44ff', '#44ff44', '#ffffff'];
+const WRAPS_PER_EDGE = 2; // 1-2 wrap-around openings per maze edge
 
 // ─── Power-up config ──────────────────────────────────────
 
@@ -223,6 +221,68 @@ function createAgents(): AnimAgent[] {
   });
 }
 
+// ─── Wrap-around edge helpers ─────────────────────────────
+
+interface WrapOpening {
+  edge: 'top' | 'bottom' | 'left' | 'right';
+  pos: number; // row for left/right edges, col for top/bottom edges
+}
+
+/**
+ * Punch wrap-around openings in the maze border.
+ * Each opening removes a border wall on one edge and the matching wall on the opposite edge,
+ * creating a tunnel that wraps the position around.
+ */
+function createWraps(maze: Cell[][]): WrapOpening[] {
+  const last = MAZE_SIZE - 1;
+  // Avoid corners (agent start positions) and center column/row
+  const forbidden = new Set([0, last, CENTER]);
+
+  function pickPositions(count: number): number[] {
+    const picks: number[] = [];
+    const used = new Set<number>();
+    let attempts = 0;
+    while (picks.length < count && attempts < 100) {
+      const p = Math.floor(Math.random() * (MAZE_SIZE - 2)) + 1;
+      if (!forbidden.has(p) && !used.has(p)) {
+        picks.push(p);
+        used.add(p);
+      }
+      attempts++;
+    }
+    return picks;
+  }
+
+  const wraps: WrapOpening[] = [];
+
+  // Top-bottom wraps (punch top wall of row 0 + bottom wall of last row at same col)
+  for (const col of pickPositions(WRAPS_PER_EDGE)) {
+    maze[0][col].walls.top = false;
+    maze[last][col].walls.bottom = false;
+    wraps.push({ edge: 'top', pos: col });
+    wraps.push({ edge: 'bottom', pos: col });
+  }
+
+  // Left-right wraps (punch left wall of col 0 + right wall of last col at same row)
+  for (const row of pickPositions(WRAPS_PER_EDGE)) {
+    maze[row][0].walls.left = false;
+    maze[row][last].walls.right = false;
+    wraps.push({ edge: 'left', pos: row });
+    wraps.push({ edge: 'right', pos: row });
+  }
+
+  return wraps;
+}
+
+/** Check if a position is a wrap opening and return the wrapped destination. */
+function checkWrap(pos: Position, dir: Direction): Position | null {
+  if (dir === 'up' && pos.row < 0) return { row: MAZE_SIZE - 1, col: pos.col };
+  if (dir === 'down' && pos.row >= MAZE_SIZE) return { row: 0, col: pos.col };
+  if (dir === 'left' && pos.col < 0) return { row: pos.row, col: MAZE_SIZE - 1 };
+  if (dir === 'right' && pos.col >= MAZE_SIZE) return { row: pos.row, col: 0 };
+  return null;
+}
+
 // ─── Enemy helpers ────────────────────────────────────────
 
 function createEnemies(): Enemy[] {
@@ -239,97 +299,6 @@ function createEnemies(): Enemy[] {
   }));
 }
 
-// ─── Teleport helpers ─────────────────────────────────────
-
-interface TeleportPad {
-  id: number;
-  a: Position;
-  b: Position;
-  color: string;
-}
-
-/** BFS to find the unique solution path from start to goal in a perfect maze. */
-function findPath(maze: Cell[][], start: Position, goal: Position): Set<string> {
-  const visited = new Set<string>();
-  const parent = new Map<string, string>();
-  const queue: Position[] = [start];
-  visited.add(posKey(start));
-
-  while (queue.length > 0) {
-    const cur = queue.shift()!;
-    if (samePos(cur, goal)) break;
-    for (const dir of getAvailableMoves(maze, cur)) {
-      const next = applyMove(cur, dir);
-      const nk = posKey(next);
-      if (!visited.has(nk)) {
-        visited.add(nk);
-        parent.set(nk, posKey(cur));
-        queue.push(next);
-      }
-    }
-  }
-
-  // Trace back from goal to start
-  const path = new Set<string>();
-  let cur = posKey(goal);
-  while (cur) {
-    path.add(cur);
-    cur = parent.get(cur)!;
-  }
-  return path;
-}
-
-function createTeleports(maze: Cell[][]): TeleportPad[] {
-  const center = CENTER;
-  const goal: Position = { row: center, col: center };
-
-  // Compute solution paths from all 4 corners and exclude those cells
-  const solutionCells = new Set<string>();
-  for (const cfg of AGENT_CONFIGS) {
-    const path = findPath(maze, cfg.startPos, goal);
-    for (const k of path) solutionCells.add(k);
-  }
-
-  const used = new Set<string>([
-    '0,0',
-    `0,${MAZE_SIZE - 1}`,
-    `${MAZE_SIZE - 1},0`,
-    `${MAZE_SIZE - 1},${MAZE_SIZE - 1}`,
-    `${center},${center}`,
-  ]);
-
-  function randPos(rowMin: number, rowMax: number): Position {
-    let p: Position;
-    let attempts = 0;
-    do {
-      p = {
-        row: Math.floor(Math.random() * (rowMax - rowMin)) + rowMin,
-        col: Math.floor(Math.random() * (MAZE_SIZE - 2)) + 1,
-      };
-      attempts++;
-      // Safety: after many attempts, relax the solution-path constraint
-      if (attempts > 200) break;
-    } while (used.has(posKey(p)) || solutionCells.has(posKey(p)));
-    used.add(posKey(p));
-    return p;
-  }
-
-  const pads: TeleportPad[] = [];
-  for (let i = 0; i < NUM_TELEPORT_PAIRS; i++) {
-    const a = randPos(1, center - 1);
-    const b = randPos(center + 2, MAZE_SIZE - 1);
-    pads.push({ id: i, a, b, color: TELEPORT_COLORS[i] });
-  }
-  return pads;
-}
-
-function checkTeleport(pos: Position, pads: TeleportPad[]): Position | null {
-  for (const pad of pads) {
-    if (samePos(pos, pad.a)) return { ...pad.b };
-    if (samePos(pos, pad.b)) return { ...pad.a };
-  }
-  return null;
-}
 
 // ─── Power-up helpers ─────────────────────────────────────
 
@@ -397,7 +366,10 @@ function moveEnemies(enemies: Enemy[], maze: Cell[][], agents: AnimAgent[]) {
     }
 
     enemy.prevPosition = { ...enemy.position };
-    enemy.position = applyMove(enemy.position, dir);
+    let eNewPos = applyMove(enemy.position, dir);
+    const ew = checkWrap(eNewPos, dir);
+    if (ew) eNewPos = ew;
+    enemy.position = eNewPos;
     enemy.lastDirection = dir;
   }
 }
@@ -409,11 +381,12 @@ type GameState = 'ready' | 'racing' | 'finished';
 export default function MazeRacePage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  const initialMaze = generateMaze(MAZE_SIZE, MAZE_SIZE);
-  const mazeRef = useRef<Cell[][]>(initialMaze);
+  const initMaze = generateMaze(MAZE_SIZE, MAZE_SIZE);
+  const initWraps = createWraps(initMaze);
+  const mazeRef = useRef<Cell[][]>(initMaze);
+  const wrapsRef = useRef<WrapOpening[]>(initWraps);
   const agentsRef = useRef<AnimAgent[]>(createAgents());
   const enemiesRef = useRef<Enemy[]>(createEnemies());
-  const teleportsRef = useRef<TeleportPad[]>(createTeleports(initialMaze));
   const powerUpsRef = useRef<PowerUp[]>(createPowerUps());
   const stateRef = useRef<GameState>('ready');
   const turnRef = useRef(0);
@@ -421,6 +394,9 @@ export default function MazeRacePage() {
   const processingRef = useRef(false);
   const gameLoopActiveRef = useRef(false);
   const moveTimeRef = useRef(0);
+
+  // Floating notifications for power-up pickups
+  const notificationsRef = useRef<{ text: string; color: string; agentColor: string; time: number; pos: Position }[]>([]);
 
   // Splash / pick-your-winner state
   const mouseRef = useRef({ x: 0, y: 0 });
@@ -483,6 +459,14 @@ export default function MazeRacePage() {
       // Collect it
       pu.collected = true;
       pu.respawnAt = currentTurn + 10; // respawn after 10 turns
+      const puDef = POWERUP_DEFS.find((d) => d.type === pu.type)!;
+      notificationsRef.current.push({
+        text: `${agent.name} +${puDef.label.toUpperCase()}`,
+        color: puDef.color,
+        agentColor: agent.color,
+        time: performance.now(),
+        pos: { ...agent.position },
+      });
 
       switch (pu.type) {
         case 'speed':
@@ -500,7 +484,9 @@ export default function MazeRacePage() {
             let bestDir = dirs[0];
             let bestDist = Infinity;
             for (const d of dirs) {
-              const next = applyMove(agent.position, d);
+              let next = applyMove(agent.position, d);
+              const mw = checkWrap(next, d);
+              if (mw) next = mw;
               const dist = manhattan(next, goal);
               if (dist < bestDist) {
                 bestDist = dist;
@@ -508,7 +494,10 @@ export default function MazeRacePage() {
               }
             }
             agent.prevPosition = { ...agent.position };
-            agent.position = applyMove(agent.position, bestDir);
+            let magnetPos = applyMove(agent.position, bestDir);
+            const mwp = checkWrap(magnetPos, bestDir);
+            if (mwp) magnetPos = mwp;
+            agent.position = magnetPos;
             agent.trail.push({ ...agent.position });
             const key = posKey(agent.position);
             agent.visited[key] = (agent.visited[key] || 0) + 1;
@@ -559,7 +548,9 @@ export default function MazeRacePage() {
         const lastMove = agent.history.length > 0 ? agent.history[agent.history.length - 1] : null;
 
         const moveOptions: MoveOption[] = directions.map((dir) => {
-          const target = applyMove(agent.position, dir);
+          let target = applyMove(agent.position, dir);
+          const wrapped = checkWrap(target, dir);
+          if (wrapped) target = wrapped;
           const key = posKey(target);
           return {
             direction: dir,
@@ -622,15 +613,12 @@ export default function MazeRacePage() {
 
       const available = getAvailableMoves(maze, agent.position);
       if (available.includes(move.direction)) {
-        agent.position = applyMove(agent.position, move.direction);
+        let newPos = applyMove(agent.position, move.direction);
+        const wrapped = checkWrap(newPos, move.direction);
+        if (wrapped) newPos = wrapped;
+        agent.position = newPos;
         agent.history.push(move.direction);
         agent.trail.push({ ...agent.position });
-
-        const teleportDest = checkTeleport(agent.position, teleportsRef.current);
-        if (teleportDest) {
-          agent.position = teleportDest;
-          agent.trail.push({ ...agent.position });
-        }
 
         const key = posKey(agent.position);
         agent.visited[key] = (agent.visited[key] || 0) + 1;
@@ -666,7 +654,9 @@ export default function MazeRacePage() {
 
       // Pick best direction (unvisited + toward goal)
       const options = dirs.map((dir) => {
-        const target = applyMove(agent.position, dir);
+        let target = applyMove(agent.position, dir);
+        const w = checkWrap(target, dir);
+        if (w) target = w;
         return {
           dir,
           dist: manhattan(target, goal),
@@ -682,18 +672,14 @@ export default function MazeRacePage() {
 
       if (options.length > 0) {
         agent.prevPosition = { ...agent.position };
-        agent.position = applyMove(agent.position, options[0].dir);
+        let bonusPos = applyMove(agent.position, options[0].dir);
+        const bw = checkWrap(bonusPos, options[0].dir);
+        if (bw) bonusPos = bw;
+        agent.position = bonusPos;
         agent.history.push(options[0].dir);
         agent.trail.push({ ...agent.position });
         const key = posKey(agent.position);
         agent.visited[key] = (agent.visited[key] || 0) + 1;
-
-        // Check teleport on bonus move too
-        const td = checkTeleport(agent.position, teleportsRef.current);
-        if (td) {
-          agent.position = td;
-          agent.trail.push({ ...agent.position });
-        }
 
         checkPowerUpCollection(agent, maze);
 
@@ -721,30 +707,16 @@ export default function MazeRacePage() {
 
     moveEnemies(enemies, maze, agents);
 
-    for (const enemy of enemies) {
-      const dest = checkTeleport(enemy.position, teleportsRef.current);
-      if (dest) {
-        enemy.position = dest;
-      }
-    }
-
     checkEnemyCollisions();
 
-    // Periodic shuffles — keep the board dynamic
+    // Periodic shuffle — uncollected power-ups drift every 15 turns
     const nextTurn = turnRef.current + 1;
-
-    // Uncollected power-ups drift to new positions every 15 turns
     if (nextTurn > 0 && nextTurn % 15 === 0) {
       for (const pu of powerUpsRef.current) {
         if (!pu.collected) {
           pu.position = getRandomPowerUpPosition();
         }
       }
-    }
-
-    // Teleport pads relocate every 25 turns (avoiding solution paths)
-    if (nextTurn > 0 && nextTurn % 25 === 0) {
-      teleportsRef.current = createTeleports(maze);
     }
 
     moveTimeRef.current = performance.now();
@@ -782,10 +754,10 @@ export default function MazeRacePage() {
   function newGame() {
     gameLoopActiveRef.current = false;
     const newMaze = generateMaze(MAZE_SIZE, MAZE_SIZE);
+    wrapsRef.current = createWraps(newMaze);
     mazeRef.current = newMaze;
     agentsRef.current = createAgents();
     enemiesRef.current = createEnemies();
-    teleportsRef.current = createTeleports(newMaze);
     powerUpsRef.current = createPowerUps();
     turnRef.current = 0;
     winnerRef.current = null;
@@ -1085,26 +1057,11 @@ export default function MazeRacePage() {
         ctx.fillText(et.label, ex + 10, infoY);
       }
 
-      // Teleport row
+      // Wrap-around row
       ctx.fillStyle = '#445566';
-      ctx.fillText('TELEPORTS', w / 2 - 180, infoY + 22);
-      for (let i = 0; i < NUM_TELEPORT_PAIRS; i++) {
-        const tc = TELEPORT_COLORS[i];
-        const tx = w / 2 - 130 + i * 50;
-        const sp = (now / 800 + i) % (Math.PI * 2);
-        ctx.beginPath();
-        ctx.arc(tx, infoY + 21, 5, sp, sp + Math.PI * 1.4);
-        ctx.strokeStyle = tc;
-        ctx.lineWidth = 1.5;
-        ctx.lineCap = 'round';
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.arc(tx, infoY + 21, 5, sp + Math.PI, sp + Math.PI * 2.4);
-        ctx.stroke();
-      }
-
+      ctx.fillText('WRAPS', w / 2 - 180, infoY + 22);
       ctx.fillStyle = '#778899';
-      ctx.fillText('Warp pads link across the maze', w / 2 + 30, infoY + 22);
+      ctx.fillText('Some edges wrap to the opposite side', w / 2 - 100, infoY + 22);
 
       // Power-up row
       ctx.fillStyle = '#445566';
@@ -1123,7 +1080,7 @@ export default function MazeRacePage() {
       // Footer
       ctx.fillStyle = '#333344';
       ctx.font = '10px "Courier New", monospace';
-      ctx.fillText('Touch an enemy = back to start  |  Step on a portal = teleport', w / 2, h - 30);
+      ctx.fillText('Touch an enemy = back to start  |  Edges can wrap around', w / 2, h - 30);
     }
 
     function draw() {
@@ -1212,6 +1169,39 @@ export default function MazeRacePage() {
       ctx.lineWidth = 3;
       ctx.strokeRect(ox, oy, mazeW, mazeH);
 
+      // ── Wrap-around edge indicators ──
+      const wraps = wrapsRef.current;
+      const wrapPulse = Math.sin(now / 400) * 0.4 + 0.6;
+      const wrapColor = `rgba(100,200,255,${wrapPulse.toFixed(2)})`;
+      ctx.strokeStyle = wrapColor;
+      ctx.lineWidth = 3;
+      ctx.lineCap = 'round';
+      for (const wrap of wraps) {
+        const arrowLen = cellSize * 0.3;
+        if (wrap.edge === 'top') {
+          const wx = ox + wrap.pos * cellSize + cellSize / 2;
+          const wy = oy;
+          // Gap in border + arrow pointing up
+          ctx.clearRect(wx - cellSize * 0.3, wy - 2, cellSize * 0.6, 5);
+          ctx.beginPath(); ctx.moveTo(wx, wy - arrowLen); ctx.lineTo(wx - 4, wy - 2); ctx.moveTo(wx, wy - arrowLen); ctx.lineTo(wx + 4, wy - 2); ctx.stroke();
+        } else if (wrap.edge === 'bottom') {
+          const wx = ox + wrap.pos * cellSize + cellSize / 2;
+          const wy = oy + mazeH;
+          ctx.clearRect(wx - cellSize * 0.3, wy - 2, cellSize * 0.6, 5);
+          ctx.beginPath(); ctx.moveTo(wx, wy + arrowLen); ctx.lineTo(wx - 4, wy + 2); ctx.moveTo(wx, wy + arrowLen); ctx.lineTo(wx + 4, wy + 2); ctx.stroke();
+        } else if (wrap.edge === 'left') {
+          const wx = ox;
+          const wy = oy + wrap.pos * cellSize + cellSize / 2;
+          ctx.clearRect(wx - 2, wy - cellSize * 0.3, 5, cellSize * 0.6);
+          ctx.beginPath(); ctx.moveTo(wx - arrowLen, wy); ctx.lineTo(wx - 2, wy - 4); ctx.moveTo(wx - arrowLen, wy); ctx.lineTo(wx - 2, wy + 4); ctx.stroke();
+        } else if (wrap.edge === 'right') {
+          const wx = ox + mazeW;
+          const wy = oy + wrap.pos * cellSize + cellSize / 2;
+          ctx.clearRect(wx - 2, wy - cellSize * 0.3, 5, cellSize * 0.6);
+          ctx.beginPath(); ctx.moveTo(wx + arrowLen, wy); ctx.lineTo(wx + 2, wy - 4); ctx.moveTo(wx + arrowLen, wy); ctx.lineTo(wx + 2, wy + 4); ctx.stroke();
+        }
+      }
+
       // ── Center goal ──
       const gx = ox + CENTER * cellSize + cellSize / 2;
       const gy = oy + CENTER * cellSize + cellSize / 2;
@@ -1238,55 +1228,6 @@ export default function MazeRacePage() {
       ctx.lineWidth = 1.5;
       ctx.strokeRect(-ds, -ds, ds * 2, ds * 2);
       ctx.restore();
-
-      // ── Teleport pads ──
-      const teleports = teleportsRef.current;
-      for (const pad of teleports) {
-        for (const pos of [pad.a, pad.b]) {
-          const px = ox + pos.col * cellSize + cellSize / 2;
-          const py = oy + pos.row * cellSize + cellSize / 2;
-
-          const tPulse = Math.sin(now / 500 + pad.id * 2.5) * 0.3 + 0.7;
-          const padGrad = ctx.createRadialGradient(px, py, 0, px, py, cellSize * 0.45);
-          padGrad.addColorStop(0, pad.color + Math.floor(tPulse * 50).toString(16).padStart(2, '0'));
-          padGrad.addColorStop(1, pad.color + '00');
-          ctx.beginPath();
-          ctx.arc(px, py, cellSize * 0.45, 0, Math.PI * 2);
-          ctx.fillStyle = padGrad;
-          ctx.fill();
-
-          const spin = (now / 800 + pad.id) % (Math.PI * 2);
-          ctx.beginPath();
-          ctx.arc(px, py, cellSize * 0.35, spin, spin + Math.PI * 1.4);
-          ctx.strokeStyle = pad.color + Math.floor(tPulse * 180).toString(16).padStart(2, '0');
-          ctx.lineWidth = 2;
-          ctx.lineCap = 'round';
-          ctx.stroke();
-          ctx.beginPath();
-          ctx.arc(px, py, cellSize * 0.35, spin + Math.PI, spin + Math.PI * 2.4);
-          ctx.stroke();
-
-          ctx.beginPath();
-          ctx.arc(px, py, cellSize * 0.08, 0, Math.PI * 2);
-          ctx.fillStyle = pad.color;
-          ctx.fill();
-        }
-
-        const pax = ox + pad.a.col * cellSize + cellSize / 2;
-        const pay = oy + pad.a.row * cellSize + cellSize / 2;
-        const pbx = ox + pad.b.col * cellSize + cellSize / 2;
-        const pby = oy + pad.b.row * cellSize + cellSize / 2;
-        ctx.save();
-        ctx.setLineDash([4, 8]);
-        ctx.strokeStyle = pad.color + '22';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(pax, pay);
-        ctx.lineTo(pbx, pby);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.restore();
-      }
 
       // ── Power-ups ──
       const powerUps = powerUpsRef.current;
@@ -1491,155 +1432,283 @@ export default function MazeRacePage() {
         }
       }
 
-      // ── POV mini-viewports ──
-      if (showPov && state === 'racing') {
+      // ── Floating power-up notifications ──
+      const notifs = notificationsRef.current;
+      for (let ni = notifs.length - 1; ni >= 0; ni--) {
+        const n = notifs[ni];
+        const age = (now - n.time) / 1000; // seconds
+        if (age > 2) { notifs.splice(ni, 1); continue; }
+        const alpha = Math.max(0, 1 - age / 2);
+        const rise = age * 30;
+        const nx = ox + n.pos.col * cellSize + cellSize / 2;
+        const ny = oy + n.pos.row * cellSize - rise;
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.font = 'bold 11px "Courier New", monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.fillStyle = n.color;
+        ctx.fillText(n.text, nx, ny);
+        ctx.restore();
+      }
+
+      // ── First-Person POV viewports ──
+      if (showPov && (state === 'racing' || state === 'finished')) {
         const povX = mazeAreaW + 5;
-        const povGap = 8;
+        const povGap = 6;
         const povH = Math.floor((h - 60 - povGap * 3) / 4);
         const povW = POV_PANEL_W - 10;
-        const viewCells = POV_VIEW_RADIUS * 2 + 1; // 7
-        const povCellSize = Math.floor(Math.min(povW, povH - 20) / viewCells);
+        const FPV_DEPTH = 8;
+
+        // Wall mapping: for a given facing, which cell wall is left/right/forward
+        const WALL_MAP: Record<Direction, { left: keyof Cell['walls']; right: keyof Cell['walls']; forward: keyof Cell['walls'] }> = {
+          up:    { left: 'left',   right: 'right',  forward: 'top' },
+          down:  { left: 'right',  right: 'left',   forward: 'bottom' },
+          left:  { left: 'bottom', right: 'top',    forward: 'left' },
+          right: { left: 'top',    right: 'bottom', forward: 'right' },
+        };
+        const FWD_VEC: Record<Direction, { dr: number; dc: number }> = {
+          up: { dr: -1, dc: 0 }, down: { dr: 1, dc: 0 },
+          left: { dr: 0, dc: -1 }, right: { dr: 0, dc: 1 },
+        };
+        const LEFT_VEC: Record<Direction, { dr: number; dc: number }> = {
+          up: { dr: 0, dc: -1 }, down: { dr: 0, dc: 1 },
+          left: { dr: 1, dc: 0 }, right: { dr: -1, dc: 0 },
+        };
+        const RIGHT_VEC: Record<Direction, { dr: number; dc: number }> = {
+          up: { dr: 0, dc: 1 }, down: { dr: 0, dc: -1 },
+          left: { dr: -1, dc: 0 }, right: { dr: 1, dc: 0 },
+        };
 
         for (let ai = 0; ai < agents.length; ai++) {
           const agent = agents[ai];
           const vpY = 50 + ai * (povH + povGap);
+          const facing: Direction = agent.history.length > 0
+            ? agent.history[agent.history.length - 1]
+            : (agent.startPos.row === 0 ? 'down' : 'up');
+          const wm = WALL_MAP[facing];
+          const fv = FWD_VEC[facing];
+          const lv = LEFT_VEC[facing];
+          const rv = RIGHT_VEC[facing];
 
           // Viewport background
-          ctx.fillStyle = '#0c0c14';
-          ctx.fillRect(povX, vpY, povW, povH);
-          ctx.strokeStyle = agent.color + '55';
-          ctx.lineWidth = 1.5;
-          ctx.strokeRect(povX, vpY, povW, povH);
-
-          // Agent name label
-          ctx.fillStyle = agent.color;
-          ctx.font = 'bold 11px "Courier New", monospace';
-          ctx.textAlign = 'left';
-          ctx.textBaseline = 'top';
-          ctx.fillText(agent.name, povX + 4, vpY + 3);
-
-          // Status indicator
-          if (agent.finished) {
-            ctx.fillStyle = '#44ff66';
-            ctx.fillText(agent.finishOrder === 1 ? ' WIN' : ` #${agent.finishOrder}`, povX + 60, vpY + 3);
-          } else if (agent.shieldTurns > 0) {
-            ctx.fillStyle = '#00ddff';
-            ctx.fillText(` SH${agent.shieldTurns}`, povX + 60, vpY + 3);
-          } else if (agent.speedTurns > 0) {
-            ctx.fillStyle = '#ffdd00';
-            ctx.fillText(` SP${agent.speedTurns}`, povX + 60, vpY + 3);
-          }
-
-          // Clip to viewport interior for maze drawing
-          const mazeAreaX = povX + Math.floor((povW - viewCells * povCellSize) / 2);
-          const mazeAreaY = vpY + 18;
           ctx.save();
           ctx.beginPath();
-          ctx.rect(mazeAreaX, mazeAreaY, viewCells * povCellSize, viewCells * povCellSize);
+          ctx.rect(povX, vpY, povW, povH);
           ctx.clip();
 
-          // Lerped agent position for centering
-          const agentVisCol = lerp(agent.prevPosition.col, agent.position.col, animT);
-          const agentVisRow = lerp(agent.prevPosition.row, agent.position.row, animT);
+          // Perspective helpers
+          const cx = povX + povW / 2;
+          const cy = vpY + povH / 2;
+          const hw = povW / 2;
+          const hh = povH / 2;
 
-          // Draw surrounding cells centered on agent
-          for (let dr = -POV_VIEW_RADIUS; dr <= POV_VIEW_RADIUS; dr++) {
-            for (let dc = -POV_VIEW_RADIUS; dc <= POV_VIEW_RADIUS; dc++) {
-              const mr = Math.round(agentVisRow) + dr;
-              const mc = Math.round(agentVisCol) + dc;
-              const dx = mazeAreaX + (dc + POV_VIEW_RADIUS) * povCellSize;
-              const dy = mazeAreaY + (dr + POV_VIEW_RADIUS) * povCellSize;
+          function pScale(d: number): number { return 1 / (d * 0.65 + 1); }
+          function sRect(d: number) {
+            const s = pScale(d);
+            return { lx: cx - hw * s, rx: cx + hw * s, ty: cy - hh * s, by: cy + hh * s };
+          }
 
-              if (mr < 0 || mr >= MAZE_SIZE || mc < 0 || mc >= MAZE_SIZE) {
-                ctx.fillStyle = '#050508';
-                ctx.fillRect(dx, dy, povCellSize, povCellSize);
-                continue;
-              }
+          // Sky gradient
+          const sky = ctx.createLinearGradient(povX, vpY, povX, cy);
+          sky.addColorStop(0, '#060612');
+          sky.addColorStop(1, '#0e0e22');
+          ctx.fillStyle = sky;
+          ctx.fillRect(povX, vpY, povW, povH / 2);
 
-              // Cell interior
-              ctx.fillStyle = '#111118';
-              ctx.fillRect(dx, dy, povCellSize, povCellSize);
+          // Floor gradient — tinted with agent color
+          const floor = ctx.createLinearGradient(povX, cy, povX, vpY + povH);
+          floor.addColorStop(0, '#121210');
+          floor.addColorStop(1, '#080808');
+          ctx.fillStyle = floor;
+          ctx.fillRect(povX, cy, povW, povH / 2);
 
-              // Walls
-              const cell = maze[mr][mc];
-              ctx.strokeStyle = '#2d2d44';
-              ctx.lineWidth = 1.5;
-              if (cell.walls.top) { ctx.beginPath(); ctx.moveTo(dx, dy); ctx.lineTo(dx + povCellSize, dy); ctx.stroke(); }
-              if (cell.walls.right) { ctx.beginPath(); ctx.moveTo(dx + povCellSize, dy); ctx.lineTo(dx + povCellSize, dy + povCellSize); ctx.stroke(); }
-              if (cell.walls.bottom) { ctx.beginPath(); ctx.moveTo(dx, dy + povCellSize); ctx.lineTo(dx + povCellSize, dy + povCellSize); ctx.stroke(); }
-              if (cell.walls.left) { ctx.beginPath(); ctx.moveTo(dx, dy); ctx.lineTo(dx, dy + povCellSize); ctx.stroke(); }
+          // Walk forward through corridor
+          let hitEnd = false;
+          for (let d = 0; d < FPV_DEPTH && !hitEnd; d++) {
+            const cr = agent.position.row + fv.dr * d;
+            const cc = agent.position.col + fv.dc * d;
 
-              // Goal marker if in view
-              if (mr === CENTER && mc === CENTER) {
+            if (cr < 0 || cr >= MAZE_SIZE || cc < 0 || cc >= MAZE_SIZE) {
+              hitEnd = true;
+              break;
+            }
+
+            const cell = maze[cr][cc];
+            const r0 = sRect(d);
+            const r1 = sRect(d + 1);
+            const brightness = Math.max(0.12, 1 - d * 0.11);
+
+            // Left wall
+            if (cell.walls[wm.left]) {
+              const shade = Math.floor(40 * brightness);
+              ctx.fillStyle = `rgb(${shade},${shade},${Math.floor(shade * 1.4)})`;
+              ctx.beginPath();
+              ctx.moveTo(r0.lx, r0.ty); ctx.lineTo(r1.lx, r1.ty);
+              ctx.lineTo(r1.lx, r1.by); ctx.lineTo(r0.lx, r0.by);
+              ctx.closePath(); ctx.fill();
+            } else if (d > 0) {
+              // Side opening — draw recessed wall edges
+              const shade = Math.floor(20 * brightness);
+              ctx.fillStyle = `rgb(${shade},${shade},${Math.floor(shade * 1.2)})`;
+              // Back edge of opening
+              const rPrev = sRect(d - 1);
+              ctx.beginPath();
+              ctx.moveTo(r0.lx, r0.ty); ctx.lineTo(r0.lx, r0.by);
+              ctx.lineTo(rPrev.lx, rPrev.by); ctx.lineTo(rPrev.lx, rPrev.ty);
+              ctx.closePath(); ctx.fill();
+            }
+
+            // Right wall
+            if (cell.walls[wm.right]) {
+              const shade = Math.floor(35 * brightness);
+              ctx.fillStyle = `rgb(${shade},${shade},${Math.floor(shade * 1.3)})`;
+              ctx.beginPath();
+              ctx.moveTo(r0.rx, r0.ty); ctx.lineTo(r1.rx, r1.ty);
+              ctx.lineTo(r1.rx, r1.by); ctx.lineTo(r0.rx, r0.by);
+              ctx.closePath(); ctx.fill();
+            } else if (d > 0) {
+              const shade = Math.floor(20 * brightness);
+              ctx.fillStyle = `rgb(${shade},${shade},${Math.floor(shade * 1.2)})`;
+              const rPrev = sRect(d - 1);
+              ctx.beginPath();
+              ctx.moveTo(r0.rx, r0.ty); ctx.lineTo(r0.rx, r0.by);
+              ctx.lineTo(rPrev.rx, rPrev.by); ctx.lineTo(rPrev.rx, rPrev.ty);
+              ctx.closePath(); ctx.fill();
+            }
+
+            // Ceiling segment
+            const ceilShade = Math.floor(18 * brightness);
+            ctx.fillStyle = `rgb(${ceilShade},${ceilShade},${Math.floor(ceilShade * 1.1)})`;
+            ctx.beginPath();
+            ctx.moveTo(r0.lx, r0.ty); ctx.lineTo(r1.lx, r1.ty);
+            ctx.lineTo(r1.rx, r1.ty); ctx.lineTo(r0.rx, r0.ty);
+            ctx.closePath(); ctx.fill();
+
+            // Floor segment
+            const floorShade = Math.floor(14 * brightness);
+            ctx.fillStyle = `rgb(${floorShade},${Math.floor(floorShade * 1.1)},${floorShade})`;
+            ctx.beginPath();
+            ctx.moveTo(r0.lx, r0.by); ctx.lineTo(r1.lx, r1.by);
+            ctx.lineTo(r1.rx, r1.by); ctx.lineTo(r0.rx, r0.by);
+            ctx.closePath(); ctx.fill();
+
+            // Draw entities at this depth
+            const entityR = sRect(d + 0.5);
+            const entitySize = (entityR.by - entityR.ty) * 0.35;
+
+            // Check for enemies at this cell
+            for (const enemy of enemies) {
+              if (enemy.position.row === cr && enemy.position.col === cc) {
+                const eColor = ENEMY_COLORS[enemy.type];
+                const ecx = (entityR.lx + entityR.rx) / 2;
+                const ecy = (entityR.ty + entityR.by) / 2;
+                const ePulse = Math.sin(now / 300 + enemy.id) * 0.2 + 0.8;
+                // Glowing enemy circle
+                const eGrad = ctx.createRadialGradient(ecx, ecy, 0, ecx, ecy, entitySize * ePulse);
+                eGrad.addColorStop(0, eColor);
+                eGrad.addColorStop(1, eColor + '00');
                 ctx.beginPath();
-                ctx.arc(dx + povCellSize / 2, dy + povCellSize / 2, povCellSize * 0.25, 0, Math.PI * 2);
-                ctx.fillStyle = `rgba(255,255,255,${(Math.sin(now / 300) * 0.3 + 0.7).toFixed(2)})`;
+                ctx.arc(ecx, ecy, entitySize * ePulse, 0, Math.PI * 2);
+                ctx.fillStyle = eGrad;
+                ctx.fill();
+                ctx.beginPath();
+                ctx.arc(ecx, ecy, entitySize * 0.4, 0, Math.PI * 2);
+                ctx.fillStyle = eColor;
+                ctx.fill();
+              }
+              // Also check left/right side corridors for enemies
+              const leftR = cr + lv.dr;
+              const leftC = cc + lv.dc;
+              if (enemy.position.row === leftR && enemy.position.col === leftC && !cell.walls[wm.left]) {
+                ctx.beginPath();
+                ctx.arc(entityR.lx + entitySize * 0.3, (entityR.ty + entityR.by) / 2, entitySize * 0.25, 0, Math.PI * 2);
+                ctx.fillStyle = ENEMY_COLORS[enemy.type] + 'aa';
+                ctx.fill();
+              }
+              const rightR = cr + rv.dr;
+              const rightC = cc + rv.dc;
+              if (enemy.position.row === rightR && enemy.position.col === rightC && !cell.walls[wm.right]) {
+                ctx.beginPath();
+                ctx.arc(entityR.rx - entitySize * 0.3, (entityR.ty + entityR.by) / 2, entitySize * 0.25, 0, Math.PI * 2);
+                ctx.fillStyle = ENEMY_COLORS[enemy.type] + 'aa';
                 ctx.fill();
               }
             }
-          }
 
-          // Draw enemies in POV view
-          for (const enemy of enemies) {
-            const eVisCol = lerp(enemy.prevPosition.col, enemy.position.col, animT);
-            const eVisRow = lerp(enemy.prevPosition.row, enemy.position.row, animT);
-            const relCol = eVisCol - Math.round(agentVisCol) + POV_VIEW_RADIUS;
-            const relRow = eVisRow - Math.round(agentVisRow) + POV_VIEW_RADIUS;
-            if (relCol < -0.5 || relCol > viewCells - 0.5 || relRow < -0.5 || relRow > viewCells - 0.5) continue;
-            const epx = mazeAreaX + relCol * povCellSize + povCellSize / 2;
-            const epy = mazeAreaY + relRow * povCellSize + povCellSize / 2;
-            ctx.beginPath();
-            ctx.arc(epx, epy, povCellSize * 0.3, 0, Math.PI * 2);
-            ctx.fillStyle = ENEMY_COLORS[enemy.type];
-            ctx.fill();
-          }
+            // Check for other agents at this cell
+            for (const other of agents) {
+              if (other.id === agent.id || other.finished) continue;
+              if (other.position.row === cr && other.position.col === cc) {
+                const ocx = (entityR.lx + entityR.rx) / 2;
+                const ocy = (entityR.ty + entityR.by) / 2;
+                ctx.beginPath();
+                ctx.arc(ocx, ocy, entitySize * 0.3, 0, Math.PI * 2);
+                ctx.fillStyle = other.color;
+                ctx.fill();
+              }
+            }
 
-          // Draw other agents in POV view
-          for (const other of agents) {
-            if (other.id === agent.id) continue;
-            const oVisCol = lerp(other.prevPosition.col, other.position.col, animT);
-            const oVisRow = lerp(other.prevPosition.row, other.position.row, animT);
-            const relCol = oVisCol - Math.round(agentVisCol) + POV_VIEW_RADIUS;
-            const relRow = oVisRow - Math.round(agentVisRow) + POV_VIEW_RADIUS;
-            if (relCol < -0.5 || relCol > viewCells - 0.5 || relRow < -0.5 || relRow > viewCells - 0.5) continue;
-            const opx = mazeAreaX + relCol * povCellSize + povCellSize / 2;
-            const opy = mazeAreaY + relRow * povCellSize + povCellSize / 2;
-            ctx.beginPath();
-            ctx.arc(opx, opy, povCellSize * 0.2, 0, Math.PI * 2);
-            ctx.fillStyle = other.color + '88';
-            ctx.fill();
-          }
+            // Goal at this cell
+            if (cr === CENTER && cc === CENTER) {
+              const gcx = (entityR.lx + entityR.rx) / 2;
+              const gcy = (entityR.ty + entityR.by) / 2;
+              const gPulse = Math.sin(now / 250) * 0.3 + 0.7;
+              ctx.beginPath();
+              ctx.arc(gcx, gcy, entitySize * 0.5 * gPulse, 0, Math.PI * 2);
+              ctx.fillStyle = `rgba(255,255,255,${gPulse.toFixed(2)})`;
+              ctx.fill();
+            }
 
-          // Draw this agent at center
-          const selfX = mazeAreaX + POV_VIEW_RADIUS * povCellSize + povCellSize / 2;
-          const selfY = mazeAreaY + POV_VIEW_RADIUS * povCellSize + povCellSize / 2;
-          ctx.beginPath();
-          ctx.arc(selfX, selfY, povCellSize * 0.3, 0, Math.PI * 2);
-          ctx.fillStyle = agent.color;
-          ctx.fill();
-
-          // Goal direction arrow at edge
-          const goalDr = CENTER - agent.position.row;
-          const goalDc = CENTER - agent.position.col;
-          if (goalDr !== 0 || goalDc !== 0) {
-            const angle = Math.atan2(goalDr, goalDc);
-            const arrowR = viewCells * povCellSize / 2 - 6;
-            const arrowX = mazeAreaX + viewCells * povCellSize / 2 + Math.cos(angle) * arrowR;
-            const arrowY = mazeAreaY + viewCells * povCellSize / 2 + Math.sin(angle) * arrowR;
-            ctx.save();
-            ctx.translate(arrowX, arrowY);
-            ctx.rotate(angle);
-            ctx.beginPath();
-            ctx.moveTo(5, 0);
-            ctx.lineTo(-3, -3);
-            ctx.lineTo(-3, 3);
-            ctx.closePath();
-            ctx.fillStyle = '#ffffff88';
-            ctx.fill();
-            ctx.restore();
+            // Forward wall (end of corridor)
+            if (cell.walls[wm.forward]) {
+              const shade = Math.floor(28 * brightness);
+              ctx.fillStyle = `rgb(${shade},${shade},${Math.floor(shade * 1.2)})`;
+              ctx.fillRect(r1.lx, r1.ty, r1.rx - r1.lx, r1.by - r1.ty);
+              hitEnd = true;
+            }
           }
 
           ctx.restore(); // unclip
+
+          // Viewport border
+          ctx.strokeStyle = agent.color + '66';
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(povX, vpY, povW, povH);
+
+          // Agent name + status label
+          ctx.fillStyle = agent.color;
+          ctx.font = 'bold 10px "Courier New", monospace';
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'top';
+          ctx.fillText(agent.name, povX + 3, vpY + 2);
+
+          // Distance to goal
+          const dist = manhattan(agent.position, { row: CENTER, col: CENTER });
+          ctx.fillStyle = '#666';
+          ctx.font = '9px "Courier New", monospace';
+          ctx.textAlign = 'right';
+          ctx.fillText(`d:${dist}`, povX + povW - 3, vpY + 2);
+
+          // Status badges
+          if (agent.shieldTurns > 0) {
+            ctx.fillStyle = '#00ddff';
+            ctx.font = 'bold 9px "Courier New", monospace';
+            ctx.textAlign = 'left';
+            ctx.fillText(`SHIELD ${agent.shieldTurns}`, povX + 3, vpY + povH - 12);
+          }
+          if (agent.speedTurns > 0) {
+            ctx.fillStyle = '#ffdd00';
+            ctx.font = 'bold 9px "Courier New", monospace';
+            ctx.textAlign = 'left';
+            ctx.fillText(`SPEED ${agent.speedTurns}`, povX + 3, vpY + povH - 12);
+          }
+          if (agent.finished) {
+            ctx.fillStyle = agent.finishOrder === 1 ? '#44ff66' : '#888';
+            ctx.font = 'bold 10px "Courier New", monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText(agent.finishOrder === 1 ? 'WINNER!' : `#${agent.finishOrder}`, povX + povW / 2, vpY + povH / 2 - 5);
+          }
         }
       }
 
