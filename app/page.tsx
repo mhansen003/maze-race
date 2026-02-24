@@ -443,6 +443,28 @@ export default function MazeRacePage() {
     }
   }
 
+  // ─── Global win counter ────────────────────────────────────
+
+  const globalWinsRef = useRef<Record<string, number>>({});
+  const winsFetchedRef = useRef(false);
+
+  function fetchGlobalWins() {
+    fetch('/api/wins').then((r) => r.json()).then((data) => {
+      globalWinsRef.current = data;
+    }).catch(() => {});
+  }
+
+  function reportWin(winnerName: string) {
+    fetch('/api/wins', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ winner: winnerName }),
+    }).then((r) => r.json()).then((data) => {
+      // Merge the incremented count
+      Object.assign(globalWinsRef.current, data);
+    }).catch(() => {});
+  }
+
   // ─── Sound effects ─────────────────────────────────────────
 
   function playSfx(src: string) {
@@ -692,6 +714,7 @@ export default function MazeRacePage() {
           agent.finishOrder = finishCount;
           if (finishCount === 1) {
             playSfx('/sfx-winner.mp3');
+            reportWin(agent.name);
             winnerRef.current = agent;
             stateRef.current = 'finished';
             gameLoopActiveRef.current = false;
@@ -751,6 +774,7 @@ export default function MazeRacePage() {
           agent.finishOrder = finishCount;
           if (finishCount === 1) {
             playSfx('/sfx-winner.mp3');
+            reportWin(agent.name);
             winnerRef.current = agent;
             stateRef.current = 'finished';
             gameLoopActiveRef.current = false;
@@ -847,6 +871,7 @@ export default function MazeRacePage() {
     pickedWinnerRef.current = null;
     notificationsRef.current = [];
     stateRef.current = 'ready';
+    fetchGlobalWins(); // refresh win counts
 
     // Stop music
     if (audioRef.current) {
@@ -976,6 +1001,12 @@ export default function MazeRacePage() {
     canvas.addEventListener('touchmove', handleTouchMoveRef.current, { passive: false });
 
     let running = true;
+
+    // Fetch global wins on first load
+    if (!winsFetchedRef.current) {
+      winsFetchedRef.current = true;
+      fetchGlobalWins();
+    }
 
     // ─── Enemy shape drawing helpers ──────────────────────
 
@@ -1136,7 +1167,13 @@ export default function MazeRacePage() {
         // Agent name
         ctx.fillStyle = isSelected ? cfg.color : '#aaaaaa';
         ctx.font = `${isSelected ? 'bold ' : ''}${mob ? 13 : 16}px "Courier New", monospace`;
-        ctx.fillText(cfg.name, avatarX, b.y + b.h - (mob ? 10 : 16));
+        ctx.fillText(cfg.name, avatarX, b.y + b.h - (mob ? 22 : 30));
+
+        // Global win count
+        const wins = globalWinsRef.current[cfg.name.toLowerCase()] || 0;
+        ctx.fillStyle = isSelected ? '#ffffff' : '#666666';
+        ctx.font = `${mob ? 10 : 12}px "Courier New", monospace`;
+        ctx.fillText(`${wins} win${wins !== 1 ? 's' : ''}`, avatarX, b.y + b.h - (mob ? 8 : 12));
       }
 
       // Start button (only if picked)
