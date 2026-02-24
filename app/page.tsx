@@ -1171,11 +1171,15 @@ export default function MazeRacePage() {
         ctx.font = `${isSelected ? 'bold ' : ''}${mob ? 13 : 16}px "Courier New", monospace`;
         ctx.fillText(cfg.name, avatarX, b.y + b.h - (mob ? 22 : 30));
 
-        // Global win count
+        // Global win count — bold, in player color
         const wins = globalWinsRef.current[cfg.name.toLowerCase()] || 0;
-        ctx.fillStyle = isSelected ? '#ffffff' : '#666666';
-        ctx.font = `${mob ? 10 : 12}px "Courier New", monospace`;
-        ctx.fillText(`${wins} win${wins !== 1 ? 's' : ''}`, avatarX, b.y + b.h - (mob ? 8 : 12));
+        ctx.save();
+        ctx.shadowColor = cfg.color;
+        ctx.shadowBlur = isSelected ? 8 : 0;
+        ctx.fillStyle = cfg.color;
+        ctx.font = `bold ${mob ? 15 : 20}px "Courier New", monospace`;
+        ctx.fillText(`${wins} win${wins !== 1 ? 's' : ''}`, avatarX, b.y + b.h - (mob ? 6 : 8));
+        ctx.restore();
       }
 
       // Start button (only if picked)
