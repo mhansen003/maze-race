@@ -445,6 +445,10 @@ export default function MazeRacePage() {
           } else {
             respawnAgent(agent, currentTurn);
           }
+          // Respawn enemy at the center (exit) so it can't camp the spawn
+          enemy.position = { row: CENTER, col: CENTER };
+          enemy.prevPosition = { row: CENTER, col: CENTER };
+          enemy.lastDirection = null;
         }
       }
     }
@@ -1642,9 +1646,9 @@ export default function MazeRacePage() {
             ctx.moveTo(r1.lx, r1.by); ctx.lineTo(r1.rx, r1.by);
             ctx.stroke();
 
-            // Draw entities at this depth
+            // Draw entities at this depth — size boosted for visibility
             const entityR = sRect(d + 0.5);
-            const entitySize = (entityR.by - entityR.ty) * 0.35;
+            const entitySize = (entityR.by - entityR.ty) * 0.45;
 
             // Check for enemies at this cell
             for (const enemy of enemies) {
@@ -1804,6 +1808,107 @@ export default function MazeRacePage() {
               ctx.lineWidth = 1;
               ctx.strokeRect(r1.lx, r1.ty, r1.rx - r1.lx, r1.by - r1.ty);
               hitEnd = true;
+            }
+          }
+
+          // ── Goal compass arrow at vanishing point ──
+          const goalDr = CENTER - agent.position.row;
+          const goalDc = CENTER - agent.position.col;
+          if (goalDr !== 0 || goalDc !== 0) {
+            // Map goal direction relative to facing
+            let relX = 0, relY = 0;
+            if (facing === 'up')    { relX =  goalDc; relY = -goalDr; }
+            if (facing === 'down')  { relX = -goalDc; relY =  goalDr; }
+            if (facing === 'left')  { relX = -goalDr; relY = -goalDc; }
+            if (facing === 'right') { relX =  goalDr; relY =  goalDc; }
+            const ang = Math.atan2(relX, -relY);
+            const arrowR = Math.min(povW, povH) * 0.12;
+            const arrowX = cx + Math.sin(ang) * arrowR * 1.8;
+            const arrowY = cy + Math.cos(ang) * arrowR * 1.2;
+            const goalPulse = Math.sin(now / 400) * 0.3 + 0.7;
+            ctx.save();
+            ctx.globalAlpha = goalPulse * 0.7;
+            ctx.translate(arrowX, arrowY);
+            ctx.rotate(-ang);
+            ctx.beginPath();
+            ctx.moveTo(0, -arrowR * 0.6);
+            ctx.lineTo(-arrowR * 0.3, arrowR * 0.3);
+            ctx.lineTo(arrowR * 0.3, arrowR * 0.3);
+            ctx.closePath();
+            ctx.fillStyle = '#ffffff';
+            ctx.fill();
+            ctx.restore();
+          }
+
+          // ── Radar: nearby entities as edge indicators ──
+          const RADAR_RANGE = 5;
+          for (const enemy of enemies) {
+            const edist = manhattan(agent.position, enemy.position);
+            if (edist > 0 && edist <= RADAR_RANGE) {
+              const dr = enemy.position.row - agent.position.row;
+              const dc = enemy.position.col - agent.position.col;
+              let rx = 0, ry = 0;
+              if (facing === 'up')    { rx =  dc; ry = -dr; }
+              if (facing === 'down')  { rx = -dc; ry =  dr; }
+              if (facing === 'left')  { rx = -dr; ry = -dc; }
+              if (facing === 'right') { rx =  dr; ry =  dc; }
+              const a = Math.atan2(rx, -ry);
+              const edgeX = cx + Math.cos(a + Math.PI / 2) * (povW * 0.42);
+              const edgeY = cy + Math.sin(a + Math.PI / 2) * (povH * 0.42);
+              const dotR = Math.max(3, 6 - edist);
+              ctx.beginPath();
+              ctx.arc(edgeX, edgeY, dotR, 0, Math.PI * 2);
+              ctx.fillStyle = ENEMY_COLORS[enemy.type] + 'cc';
+              ctx.fill();
+            }
+          }
+          for (const pu of powerUpsRef.current) {
+            if (pu.collected) continue;
+            const pdist = manhattan(agent.position, pu.position);
+            if (pdist > 0 && pdist <= RADAR_RANGE) {
+              const dr = pu.position.row - agent.position.row;
+              const dc = pu.position.col - agent.position.col;
+              let rx = 0, ry = 0;
+              if (facing === 'up')    { rx =  dc; ry = -dr; }
+              if (facing === 'down')  { rx = -dc; ry =  dr; }
+              if (facing === 'left')  { rx = -dr; ry = -dc; }
+              if (facing === 'right') { rx =  dr; ry =  dc; }
+              const a = Math.atan2(rx, -ry);
+              const edgeX = cx + Math.cos(a + Math.PI / 2) * (povW * 0.42);
+              const edgeY = cy + Math.sin(a + Math.PI / 2) * (povH * 0.42);
+              ctx.beginPath();
+              ctx.arc(edgeX, edgeY, 3, 0, Math.PI * 2);
+              ctx.fillStyle = POWERUP_COLORS[pu.type] + 'cc';
+              ctx.fill();
+            }
+          }
+
+          // Wrap portal radar — show nearby wrap openings as cyan diamonds
+          for (const wrap of wrapsRef.current) {
+            let wr: number, wc: number;
+            if (wrap.edge === 'top')    { wr = 0; wc = wrap.pos; }
+            else if (wrap.edge === 'bottom') { wr = MAZE_SIZE - 1; wc = wrap.pos; }
+            else if (wrap.edge === 'left')   { wr = wrap.pos; wc = 0; }
+            else                             { wr = wrap.pos; wc = MAZE_SIZE - 1; }
+            const wdist = manhattan(agent.position, { row: wr, col: wc });
+            if (wdist > 0 && wdist <= RADAR_RANGE) {
+              const dr = wr - agent.position.row;
+              const dc = wc - agent.position.col;
+              let rx2 = 0, ry2 = 0;
+              if (facing === 'up')    { rx2 =  dc; ry2 = -dr; }
+              if (facing === 'down')  { rx2 = -dc; ry2 =  dr; }
+              if (facing === 'left')  { rx2 = -dr; ry2 = -dc; }
+              if (facing === 'right') { rx2 =  dr; ry2 =  dc; }
+              const wa = Math.atan2(rx2, -ry2);
+              const wex = cx + Math.cos(wa + Math.PI / 2) * (povW * 0.42);
+              const wey = cy + Math.sin(wa + Math.PI / 2) * (povH * 0.42);
+              // Diamond shape
+              ctx.beginPath();
+              ctx.moveTo(wex, wey - 4); ctx.lineTo(wex + 3, wey);
+              ctx.lineTo(wex, wey + 4); ctx.lineTo(wex - 3, wey);
+              ctx.closePath();
+              ctx.fillStyle = 'rgba(100,200,255,0.8)';
+              ctx.fill();
             }
           }
 
