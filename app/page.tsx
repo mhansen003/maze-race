@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { Cell, Position, Direction, AgentConfig, MoveRequest } from '@/lib/types';
-import { generateMaze, mazeToAscii, getAvailableMoves, applyMove } from '@/lib/maze';
+import { Cell, Position, Direction, AgentConfig, MoveRequest, MoveOption } from '@/lib/types';
+import { generateMaze, getAvailableMoves, applyMove } from '@/lib/maze';
 
 // ─── Constants ─────────────────────────────────────────────
 
@@ -60,7 +60,21 @@ function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }
 
-// ─── Extended agent with animation state ───────────────────
+// ─── Helpers ───────────────────────────────────────────────
+
+const OPPOSITE: Record<Direction, Direction> = {
+  up: 'down', down: 'up', left: 'right', right: 'left',
+};
+
+function posKey(p: Position): string {
+  return `${p.row},${p.col}`;
+}
+
+function manhattan(a: Position, b: Position): number {
+  return Math.abs(a.row - b.row) + Math.abs(a.col - b.col);
+}
+
+// ─── Extended agent with animation + visited tracking ──────
 
 interface AnimAgent {
   id: number;
@@ -72,20 +86,25 @@ interface AnimAgent {
   prevPosition: Position;
   history: Direction[];
   trail: Position[];
+  visited: Record<string, number>; // "row,col" → visit count
   finished: boolean;
   finishOrder: number | null;
 }
 
 function createAgents(): AnimAgent[] {
-  return AGENT_CONFIGS.map((cfg) => ({
-    ...cfg,
-    position: { ...cfg.startPos },
-    prevPosition: { ...cfg.startPos },
-    history: [],
-    trail: [{ ...cfg.startPos }],
-    finished: false,
-    finishOrder: null,
-  }));
+  return AGENT_CONFIGS.map((cfg) => {
+    const key = posKey(cfg.startPos);
+    return {
+      ...cfg,
+      position: { ...cfg.startPos },
+      prevPosition: { ...cfg.startPos },
+      history: [],
+      trail: [{ ...cfg.startPos }],
+      visited: { [key]: 1 },
+      finished: false,
+      finishOrder: null,
+    };
+  });
 }
 
 type GameState = 'ready' | 'racing' | 'finished';
@@ -121,20 +140,33 @@ export default function MazeRacePage() {
       return;
     }
 
-    // Query all agents in parallel
+    // Build structured move options and query all agents in parallel
     const results = await Promise.all(
       active.map(async (agent) => {
-        const available = getAvailableMoves(maze, agent.position);
-        const ascii = mazeToAscii(maze, agent.position, goal);
+        const directions = getAvailableMoves(maze, agent.position);
+        const lastMove = agent.history.length > 0 ? agent.history[agent.history.length - 1] : null;
+
+        const moveOptions: MoveOption[] = directions.map((dir) => {
+          const target = applyMove(agent.position, dir);
+          const key = posKey(target);
+          return {
+            direction: dir,
+            row: target.row,
+            col: target.col,
+            distanceToGoal: manhattan(target, goal),
+            timesVisited: agent.visited[key] || 0,
+            isReverse: lastMove !== null && dir === OPPOSITE[lastMove],
+          };
+        });
 
         const body: MoveRequest = {
           agentName: agent.name,
           personality: agent.personality,
           position: agent.position,
           goal,
-          mazeAscii: ascii,
-          availableMoves: available,
-          recentMoves: agent.history.slice(-10),
+          currentDistance: manhattan(agent.position, goal),
+          moveOptions,
+          recentMoves: agent.history.slice(-15),
         };
 
         try {
@@ -146,10 +178,13 @@ export default function MazeRacePage() {
           const data = await res.json();
           return { agentId: agent.id, direction: data.direction as Direction };
         } catch {
-          return {
-            agentId: agent.id,
-            direction: available[Math.floor(Math.random() * available.length)],
-          };
+          // Fallback: pick best option locally
+          const best = [...moveOptions].sort((a, b) => {
+            if (a.timesVisited === 0 && b.timesVisited > 0) return -1;
+            if (b.timesVisited === 0 && a.timesVisited > 0) return 1;
+            return a.distanceToGoal - b.distanceToGoal;
+          });
+          return { agentId: agent.id, direction: best[0].direction };
         }
       })
     );
@@ -168,6 +203,10 @@ export default function MazeRacePage() {
         agent.position = applyMove(agent.position, move.direction);
         agent.history.push(move.direction);
         agent.trail.push({ ...agent.position });
+
+        // Track visited cells
+        const key = posKey(agent.position);
+        agent.visited[key] = (agent.visited[key] || 0) + 1;
 
         if (agent.position.row === CENTER && agent.position.col === CENTER) {
           finishCount++;

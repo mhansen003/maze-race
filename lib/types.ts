@@ -36,12 +36,21 @@ export interface AgentConfig {
   startPos: Position;
 }
 
+export interface MoveOption {
+  direction: Direction;
+  row: number;
+  col: number;
+  distanceToGoal: number;
+  timesVisited: number;
+  isReverse: boolean;
+}
+
 export interface MoveRequest {
   agentName: string;
   personality: string;
   position: Position;
   goal: Position;
-  mazeAscii: string;
-  availableMoves: Direction[];
+  currentDistance: number;
+  moveOptions: MoveOption[];
   recentMoves: Direction[];
 }
