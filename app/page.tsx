@@ -11,12 +11,12 @@ const CENTER = Math.floor(MAZE_SIZE / 2); // 12
 const ANIM_DURATION = 224; // ~30% faster than 320ms
 const MIN_TURN_GAP = 0;   // no pause — continuous flowing movement
 const ENEMY_DETECT_RANGE = 3;
-const NUM_POWERUPS = 3;
+const NUM_POWERUPS = 4;
 const WRAPS_PER_EDGE = 2; // 1-2 wrap-around openings per maze edge
 
 // ─── Power-up config ──────────────────────────────────────
 
-type PowerUpType = 'speed' | 'shield' | 'magnet';
+type PowerUpType = 'speed' | 'shield' | 'magnet' | 'walljump';
 
 interface PowerUp {
   id: number;
@@ -27,16 +27,47 @@ interface PowerUp {
 }
 
 const POWERUP_DEFS: { type: PowerUpType; color: string; label: string; duration: number }[] = [
-  { type: 'speed', color: '#ffdd00', label: 'Speed', duration: 5 },
-  { type: 'shield', color: '#00ddff', label: 'Shield', duration: 6 },
-  { type: 'magnet', color: '#ffffff', label: 'Magnet', duration: 0 }, // instant
+  { type: 'speed', color: '#ffdd00', label: 'Speed', duration: 0 },
+  { type: 'shield', color: '#00ddff', label: 'Shield', duration: 0 },
+  { type: 'magnet', color: '#ffffff', label: 'Magnet', duration: 0 },
+  { type: 'walljump', color: '#44ff66', label: 'Wall Jump', duration: 0 },
 ];
 
 const POWERUP_COLORS: Record<PowerUpType, string> = {
   speed: '#ffdd00',
   shield: '#00ddff',
   magnet: '#ffffff',
+  walljump: '#44ff66',
 };
+
+// ─── Rock-Paper-Scissors battle types ────────────────────
+
+type RPSChoice = 'rock' | 'paper' | 'scissors';
+
+interface RPSRound {
+  a1Choice: RPSChoice;
+  a2Choice: RPSChoice;
+  winner: 'a1' | 'a2' | 'draw';
+}
+
+interface RPSBattle {
+  agent1Id: number;
+  agent2Id: number;
+  rounds: RPSRound[];
+  scores: { a1: number; a2: number }[];
+  startTime: number;
+  loserId: number;
+  resolved: boolean;
+  soundsPlayed: Set<string>;
+}
+
+const RPS_CHOICES: RPSChoice[] = ['rock', 'paper', 'scissors'];
+const RPS_EMOJI: Record<RPSChoice, string> = { rock: '\u270a', paper: '\u270b', scissors: '\u2702\ufe0f' };
+const RPS_INTRO = 1200;
+const RPS_SHAKE = 1000;
+const RPS_REVEAL = 1200;
+const RPS_FINAL = 2000;
+const RPS_ROUND_DUR = RPS_SHAKE + RPS_REVEAL;
 
 const AGENT_CONFIGS: AgentConfig[] = [
   {
@@ -208,6 +239,7 @@ interface AnimAgent {
   teleportTurn: number; // turn when last teleported (for POV flash)
   speedTurns: number;
   shieldTurns: number;
+  wallJumpAvailable: boolean;
 }
 
 function createAgents(): AnimAgent[] {
@@ -232,6 +264,7 @@ function createAgents(): AnimAgent[] {
       teleportTurn: -99,
       speedTurns: 0,
       shieldTurns: 0,
+      wallJumpAvailable: false,
     };
   });
 }
@@ -336,7 +369,7 @@ function getRandomPowerUpPosition(): Position {
 }
 
 function createPowerUps(): PowerUp[] {
-  const types: PowerUpType[] = ['speed', 'shield', 'magnet'];
+  const types: PowerUpType[] = ['speed', 'shield', 'magnet', 'walljump'];
   return types.map((type, i) => ({
     id: i,
     type,
@@ -344,6 +377,56 @@ function createPowerUps(): PowerUp[] {
     collected: false,
     respawnAt: 0,
   }));
+}
+
+// ─── RPS helpers ─────────────────────────────────────────
+
+function randomRPS(): RPSChoice {
+  return RPS_CHOICES[Math.floor(Math.random() * 3)];
+}
+
+function rpsWinner(a: RPSChoice, b: RPSChoice): 'a' | 'b' | 'draw' {
+  if (a === b) return 'draw';
+  if ((a === 'rock' && b === 'scissors') || (a === 'paper' && b === 'rock') || (a === 'scissors' && b === 'paper')) return 'a';
+  return 'b';
+}
+
+function generateRPSBattle(a1Id: number, a2Id: number): RPSBattle {
+  const rounds: RPSRound[] = [];
+  const scores: { a1: number; a2: number }[] = [];
+  let a1s = 0, a2s = 0;
+
+  for (let i = 0; i < 3; i++) {
+    const c1 = randomRPS();
+    const c2 = randomRPS();
+    const result = rpsWinner(c1, c2);
+    if (result === 'a') a1s++;
+    else if (result === 'b') a2s++;
+    rounds.push({ a1Choice: c1, a2Choice: c2, winner: result === 'a' ? 'a1' : result === 'b' ? 'a2' : 'draw' });
+    scores.push({ a1: a1s, a2: a2s });
+  }
+
+  // Sudden death if tied
+  while (a1s === a2s) {
+    const c1 = randomRPS();
+    const c2 = randomRPS();
+    const result = rpsWinner(c1, c2);
+    if (result === 'a') a1s++;
+    else if (result === 'b') a2s++;
+    rounds.push({ a1Choice: c1, a2Choice: c2, winner: result === 'a' ? 'a1' : result === 'b' ? 'a2' : 'draw' });
+    scores.push({ a1: a1s, a2: a2s });
+  }
+
+  return {
+    agent1Id: a1Id,
+    agent2Id: a2Id,
+    rounds,
+    scores,
+    startTime: 0,
+    loserId: a1s < a2s ? a1Id : a2Id,
+    resolved: false,
+    soundsPlayed: new Set(),
+  };
 }
 
 function moveEnemies(enemies: Enemy[], maze: Cell[][], agents: AnimAgent[]) {
@@ -421,13 +504,15 @@ export default function MazeRacePage() {
   // Floating notifications for power-up pickups
   const notificationsRef = useRef<{ text: string; color: string; agentColor: string; time: number; pos: Position }[]>([]);
 
+  const rpsBattleRef = useRef<RPSBattle | null>(null);
+
   // Splash / pick-your-winner state
   const mouseRef = useRef({ x: 0, y: 0 });
   const pickedWinnerRef = useRef<number | null>(null); // agent id
   const particlesRef = useRef<Particle[]>(createParticles(60));
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const trackIndexRef = useRef(0);
-  const TRACKS = ['/music.mp3', '/music2.mp3'];
+  const TRACKS = ['/music.mp3', '/music2.mp3', '/music3.mp3', '/music4.mp3', '/music5.mp3', '/music6.mp3'];
   const mutedRef = useRef(false);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
@@ -464,14 +549,31 @@ export default function MazeRacePage() {
     }).catch(() => {});
   }
 
-  function reportWin(winnerName: string) {
+  function reportWin(winnerName: string, moveCount: number) {
+    // Optimistic local increment — updates display immediately
+    const key = winnerName.toLowerCase();
+    globalWinsRef.current[key] = (globalWinsRef.current[key] || 0) + 1;
+    // Optimistic least-moves update
+    const lmKey = `leastMoves:${key}`;
+    const currentBest = globalWinsRef.current[lmKey] || 2000;
+    if (moveCount < currentBest) {
+      globalWinsRef.current[lmKey] = moveCount;
+    }
+
     fetch('/api/wins', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ winner: winnerName }),
-    }).then((r) => r.json()).then((data) => {
-      // Merge the incremented count
-      Object.assign(globalWinsRef.current, data);
+      body: JSON.stringify({ winner: winnerName, moves: moveCount }),
+    }).then((r) => {
+      if (!r.ok) return;
+      return r.json();
+    }).then((data) => {
+      if (data && typeof data[key] === 'number') {
+        globalWinsRef.current[key] = data[key];
+      }
+      if (data && typeof data[lmKey] === 'number') {
+        globalWinsRef.current[lmKey] = data[lmKey];
+      }
     }).catch(() => {});
   }
 
@@ -516,7 +618,16 @@ export default function MazeRacePage() {
 
         if (sameCellNow || crossedPaths) {
           if (agent.shieldTurns > 0) {
-            // Shield blocks the hit
+            // Shield blocks the hit — consumed on use
+            agent.shieldTurns = 0;
+            playSfx('/sfx-powerup.mp3');
+            notificationsRef.current.push({
+              text: `${agent.name} SHIELD BLOCKED!`,
+              color: '#00ddff',
+              agentColor: agent.color,
+              time: performance.now(),
+              pos: { ...agent.position },
+            });
           } else {
             respawnAgent(agent, currentTurn);
           }
@@ -542,8 +653,7 @@ export default function MazeRacePage() {
     agent.frozenTurns = 0;
     agent.scrambledTurns = 0;
     agent.statusEffect = null;
-    agent.speedTurns = 0;
-    agent.shieldTurns = 0;
+    // Speed, shield, and wall jump persist through respawns (permanent buffs)
   }
 
   // ─── Power-up collection ──────────────────────────────────
@@ -572,43 +682,37 @@ export default function MazeRacePage() {
 
       switch (pu.type) {
         case 'speed':
-          agent.speedTurns = 5;
+          agent.speedTurns = 999; // Permanent 50% speed boost
           break;
         case 'shield':
-          agent.shieldTurns = 6;
+          agent.shieldTurns = 999; // Lasts until consumed by enemy hit
           break;
         case 'magnet': {
-          // Pull agent 2 steps toward goal using maze paths
-          for (let step = 0; step < 2; step++) {
-            const dirs = getAvailableMoves(maze, agent.position);
-            if (dirs.length === 0) break;
-            // Pick direction that reduces distance to goal
-            let bestDir = dirs[0];
-            let bestDist = Infinity;
-            for (const d of dirs) {
-              let next = applyMove(agent.position, d);
-              const mw = checkWrap(next, d);
-              if (mw) next = mw;
-              const dist = manhattan(next, goal);
-              if (dist < bestDist) {
-                bestDist = dist;
-                bestDir = d;
-              }
+          // Suck up any other buffs within 2 cells (ignoring walls)
+          for (const otherPu of powerUps) {
+            if (otherPu.id === pu.id || otherPu.collected) continue;
+            if (manhattan(agent.position, otherPu.position) <= 2) {
+              playSfx('/sfx-powerup.mp3');
+              otherPu.collected = true;
+              otherPu.respawnAt = currentTurn + 30 + Math.floor(Math.random() * 20);
+              const otherDef = POWERUP_DEFS.find((d) => d.type === otherPu.type)!;
+              notificationsRef.current.push({
+                text: `${agent.name} +${otherDef.label.toUpperCase()}`,
+                color: otherDef.color,
+                agentColor: agent.color,
+                time: performance.now(),
+                pos: { ...agent.position },
+              });
+              if (otherPu.type === 'speed') agent.speedTurns = 999;
+              else if (otherPu.type === 'shield') agent.shieldTurns = 999;
+              else if (otherPu.type === 'walljump') agent.wallJumpAvailable = true;
             }
-            agent.prevPosition = { ...agent.position };
-            let magnetPos = applyMove(agent.position, bestDir);
-            const mwp = checkWrap(magnetPos, bestDir);
-            if (mwp) magnetPos = mwp;
-            agent.position = magnetPos;
-            agent.trail.push({ ...agent.position });
-            const key = posKey(agent.position);
-            agent.visited[key] = (agent.visited[key] || 0) + 1;
-
-            // Check if reached goal
-            if (agent.position.row === CENTER && agent.position.col === CENTER) break;
           }
           break;
         }
+        case 'walljump':
+          agent.wallJumpAvailable = true; // One-time wall jump
+          break;
       }
     }
   }
@@ -619,6 +723,29 @@ export default function MazeRacePage() {
       if (pu.collected && currentTurn >= pu.respawnAt) {
         pu.position = getRandomPowerUpPosition();
         pu.collected = false;
+      }
+    }
+  }
+
+  // ─── Agent-vs-agent collision → RPS battle ───────────────
+
+  function checkAgentCollisions() {
+    if (rpsBattleRef.current) return; // already in a battle
+    const agents = agentsRef.current;
+    for (let i = 0; i < agents.length; i++) {
+      for (let j = i + 1; j < agents.length; j++) {
+        if (agents[i].finished || agents[j].finished) continue;
+        const sameCellNow = samePos(agents[i].position, agents[j].position);
+        const crossedPaths =
+          samePos(agents[i].position, agents[j].prevPosition) &&
+          samePos(agents[j].position, agents[i].prevPosition);
+        if (sameCellNow || crossedPaths) {
+          const battle = generateRPSBattle(agents[i].id, agents[j].id);
+          battle.startTime = performance.now();
+          rpsBattleRef.current = battle;
+          playSfx('/sfx-teleport.mp3');
+          return;
+        }
       }
     }
   }
@@ -638,7 +765,22 @@ export default function MazeRacePage() {
       const directions = getAvailableMoves(maze, agent.position);
       const lastMove = agent.history.length > 0 ? agent.history[agent.history.length - 1] : null;
 
-      const options = directions.map((dir) => {
+      // Wall jump: also consider wall-blocked directions
+      const wallJumpDirs: Direction[] = [];
+      if (agent.wallJumpAvailable) {
+        const allDirs: Direction[] = ['up', 'down', 'left', 'right'];
+        for (const d of allDirs) {
+          if (!directions.includes(d)) {
+            const t = applyMove(agent.position, d);
+            if (t.row >= 0 && t.row < MAZE_SIZE && t.col >= 0 && t.col < MAZE_SIZE) {
+              wallJumpDirs.push(d);
+            }
+          }
+        }
+      }
+      const allDirections = [...directions, ...wallJumpDirs];
+
+      const options = allDirections.map((dir) => {
         let target = applyMove(agent.position, dir);
         const wrapped = checkWrap(target, dir);
         if (wrapped) target = wrapped;
@@ -649,6 +791,7 @@ export default function MazeRacePage() {
           timesVisited: agent.visited[key] || 0,
           isReverse: lastMove !== null && dir === OPPOSITE[lastMove],
           hasEnemy: enemies.some((e) => samePos(e.position, target)),
+          isWallJump: wallJumpDirs.includes(dir),
         };
       });
 
@@ -664,6 +807,7 @@ export default function MazeRacePage() {
         if (a.hasEnemy !== b.hasEnemy) return a.hasEnemy ? 1 : -1;
         if (a.isReverse !== b.isReverse) return a.isReverse ? 1 : -1;
         if (a.timesVisited !== b.timesVisited) return a.timesVisited - b.timesVisited;
+        if (a.isWallJump !== b.isWallJump) return a.isWallJump ? 1 : -1; // save wall jump
         if (isCycling) return 0; // random among same-visit-count when cycling
         return a.distanceToGoal - b.distanceToGoal;
       });
@@ -675,6 +819,7 @@ export default function MazeRacePage() {
           o.hasEnemy === best.hasEnemy &&
           o.isReverse === best.isReverse &&
           o.timesVisited === best.timesVisited &&
+          o.isWallJump === best.isWallJump &&
           (isCycling || o.distanceToGoal === best.distanceToGoal)
       );
       const pick = tied[Math.floor(Math.random() * tied.length)];
@@ -707,7 +852,19 @@ export default function MazeRacePage() {
       if (!agent || agent.finished) continue;
 
       const available = getAvailableMoves(maze, agent.position);
-      if (available.includes(move.direction)) {
+      const isWallJump = !available.includes(move.direction) && agent.wallJumpAvailable;
+      if (available.includes(move.direction) || isWallJump) {
+        if (isWallJump) {
+          agent.wallJumpAvailable = false;
+          playSfx('/sfx-teleport.mp3');
+          notificationsRef.current.push({
+            text: `${agent.name} WALL JUMP!`,
+            color: '#44ff66',
+            agentColor: agent.color,
+            time: performance.now(),
+            pos: { ...agent.position },
+          });
+        }
         let newPos = applyMove(agent.position, move.direction);
         const wrapped = checkWrap(newPos, move.direction);
         if (wrapped) { newPos = wrapped; playSfx('/sfx-teleport.mp3'); agent.teleportTurn = turnRef.current; }
@@ -724,7 +881,7 @@ export default function MazeRacePage() {
           agent.finishOrder = finishCount;
           if (finishCount === 1) {
             playSfx('/sfx-winner.mp3');
-            reportWin(agent.name);
+            reportWin(agent.name, agent.history.length);
             winnerRef.current = agent;
             stateRef.current = 'finished';
             gameLoopActiveRef.current = false;
@@ -741,9 +898,10 @@ export default function MazeRacePage() {
       }
     }
 
-    // Speed boost: bonus move for agents with speed
+    // Speed boost: 50% movement increase — bonus move every other turn
     for (const agent of agents) {
       if (agent.finished || agent.speedTurns <= 0) continue;
+      if (turnRef.current % 2 !== 0) continue; // 50% = bonus every 2nd turn
 
       const dirs = getAvailableMoves(maze, agent.position);
       const lastMove = agent.history.length > 0 ? agent.history[agent.history.length - 1] : null;
@@ -784,7 +942,7 @@ export default function MazeRacePage() {
           agent.finishOrder = finishCount;
           if (finishCount === 1) {
             playSfx('/sfx-winner.mp3');
-            reportWin(agent.name);
+            reportWin(agent.name, agent.history.length);
             winnerRef.current = agent;
             stateRef.current = 'finished';
             gameLoopActiveRef.current = false;
@@ -793,25 +951,12 @@ export default function MazeRacePage() {
       }
     }
 
-    // Decrement power-up timers
-    for (const agent of agents) {
-      if (agent.speedTurns > 0) agent.speedTurns--;
-      if (agent.shieldTurns > 0) agent.shieldTurns--;
-    }
-
+    // Power-up buffs persist — no decrement
     respawnCollectedPowerUps();
     moveEnemies(enemies, maze, agents);
     checkEnemyCollisions();
 
-    // Periodic shuffle
-    const nextTurn = turnRef.current + 1;
-    if (nextTurn > 0 && nextTurn % 15 === 0) {
-      for (const pu of powerUpsRef.current) {
-        if (!pu.collected) {
-          pu.position = getRandomPowerUpPosition();
-        }
-      }
-    }
+    // Power-ups stay in place until collected — no periodic shuffle
 
     moveTimeRef.current = performance.now();
     turnRef.current++;
@@ -854,14 +999,20 @@ export default function MazeRacePage() {
       audio.play().catch(() => {});
     }
     if (audioRef.current) { audioRef.current.pause(); }
-    trackIndexRef.current = Math.random() < 0.5 ? 0 : 1;
+    trackIndexRef.current = Math.floor(Math.random() * TRACKS.length);
     playTrack();
 
     // Continuous game loop — local pathfinding, no API delay
     (async () => {
       while (gameLoopActiveRef.current) {
+        // Pause during RPS battles
+        while (rpsBattleRef.current) {
+          await new Promise((r) => setTimeout(r, 100));
+          if (!gameLoopActiveRef.current) return;
+        }
         const results = computeMoves();
         applyMoves(results);
+        checkAgentCollisions();
         await new Promise((r) => setTimeout(r, ANIM_DURATION));
       }
     })();
@@ -880,6 +1031,7 @@ export default function MazeRacePage() {
     moveTimeRef.current = 0;
     pickedWinnerRef.current = null;
     notificationsRef.current = [];
+    rpsBattleRef.current = null;
     stateRef.current = 'ready';
     fetchGlobalWins(); // refresh win counts
 
@@ -892,21 +1044,32 @@ export default function MazeRacePage() {
 
   // ─── Click handling with agent picking ────────────────────
 
+  function getLogoBottom(w: number, h: number) {
+    const mob = w < 600;
+    const logoSize = mob ? Math.min(w * 0.5, 200) : Math.min(h * 0.28, 300);
+    const logoY = mob ? h * 0.01 : h * 0.02;
+    return logoY + logoSize;
+  }
+
   function getAgentCardBounds(w: number, h: number) {
     const mob = w < 600;
     const cardW = mob ? 130 : 180;
     const cardH = mob ? 130 : 170;
     const gap = mob ? 10 : 24;
 
+    // Flow from logo bottom: logo → prompt text → gap → cards
+    const logoBottom = getLogoBottom(w, h);
+    const promptGap = mob ? 30 : 40; // space for "WHO WILL WIN?" + subtitle
+    const cardsTop = logoBottom + promptGap;
+
     if (mob) {
-      // 2×2 grid layout centered vertically
+      // 2×2 grid layout centered
       const cols = 2;
       const totalW = cols * cardW + (cols - 1) * gap;
       const startX = (w - totalW) / 2;
-      const startY = h * 0.24;
       return AGENT_CONFIGS.map((_, i) => ({
         x: startX + (i % cols) * (cardW + gap),
-        y: startY + Math.floor(i / cols) * (cardH + gap),
+        y: cardsTop + Math.floor(i / cols) * (cardH + gap),
         w: cardW,
         h: cardH,
       }));
@@ -915,10 +1078,9 @@ export default function MazeRacePage() {
     // Desktop: single row
     const totalW = AGENT_CONFIGS.length * cardW + (AGENT_CONFIGS.length - 1) * gap;
     const startX = (w - totalW) / 2;
-    const cardY = h * 0.3;
     return AGENT_CONFIGS.map((_, i) => ({
       x: startX + i * (cardW + gap),
-      y: cardY,
+      y: cardsTop,
       w: cardW,
       h: cardH,
     }));
@@ -953,7 +1115,9 @@ export default function MazeRacePage() {
 
       // Check if clicking the start button (only if a winner is picked)
       if (pickedWinnerRef.current !== null) {
-        const btnY = h * 0.72;
+        const cardBounds = getAgentCardBounds(w, h);
+        const lastCard = cardBounds[cardBounds.length - 1];
+        const btnY = lastCard.y + lastCard.h + (w < 600 ? 20 : 30);
         if (my >= btnY - 25 && my <= btnY + 25) {
           startRace();
         }
@@ -1062,9 +1226,9 @@ export default function MazeRacePage() {
 
       ctx.textAlign = 'center';
 
-      // Logo image — responsive sizing
+      // Logo image — responsive sizing, flows content below
       const logo = logoRef.current;
-      const logoSize = mob ? Math.min(w * 0.85, 400) : 550;
+      const logoSize = mob ? Math.min(w * 0.5, 200) : Math.min(h * 0.28, 300);
       const logoY = mob ? h * 0.01 : h * 0.02;
       if (logo && logo.complete && logo.naturalWidth > 0) {
         const aspect = logo.naturalWidth / logo.naturalHeight;
@@ -1072,8 +1236,9 @@ export default function MazeRacePage() {
         ctx.drawImage(logo, w / 2 - logoW / 2, logoY, logoW, logoSize);
       }
 
-      // "WHO WILL WIN?" prompt
-      const promptY = mob ? h * 0.15 : h * 0.22;
+      // "WHO WILL WIN?" prompt — positioned below logo
+      const logoBottom = logoY + logoSize;
+      const promptY = logoBottom + (mob ? 6 : 10);
       ctx.fillStyle = '#ffffff';
       ctx.font = `bold ${mob ? 15 : 20}px "Courier New", monospace`;
       ctx.fillText('WHO WILL WIN?', w / 2, promptY);
@@ -1159,20 +1324,25 @@ export default function MazeRacePage() {
         ctx.font = `${isSelected ? 'bold ' : ''}${mob ? 13 : 16}px "Courier New", monospace`;
         ctx.fillText(cfg.name, avatarX, b.y + b.h - (mob ? 22 : 30));
 
-        // Global win count — bold, in player color
+        // Global win count + least moves — in player color
         const wins = globalWinsRef.current[cfg.name.toLowerCase()] || 0;
+        const leastMoves = globalWinsRef.current[`leastMoves:${cfg.name.toLowerCase()}`] || 2000;
         ctx.save();
         ctx.shadowColor = cfg.color;
         ctx.shadowBlur = isSelected ? 8 : 0;
         ctx.fillStyle = cfg.color;
-        ctx.font = `bold ${mob ? 15 : 20}px "Courier New", monospace`;
-        ctx.fillText(`${wins} win${wins !== 1 ? 's' : ''}`, avatarX, b.y + b.h - (mob ? 6 : 8));
+        ctx.font = `bold ${mob ? 13 : 16}px "Courier New", monospace`;
+        ctx.fillText(`${wins} win${wins !== 1 ? 's' : ''}`, avatarX, b.y + b.h - (mob ? 16 : 22));
+        ctx.fillStyle = leastMoves < 2000 ? '#aaffcc' : '#556677';
+        ctx.font = `${mob ? 10 : 12}px "Courier New", monospace`;
+        ctx.fillText(leastMoves < 2000 ? `best: ${leastMoves}` : 'best: --', avatarX, b.y + b.h - (mob ? 4 : 6));
         ctx.restore();
       }
 
-      // Start button (only if picked)
+      // Start button (only if picked) — positioned below cards
       if (picked !== null) {
-        const btnY = h * 0.72;
+        const lastCard = bounds[bounds.length - 1];
+        const btnY = lastCard.y + lastCard.h + (mob ? 20 : 30);
         const btnPulse = Math.sin(now / 400) * 0.15 + 0.85;
         const pickedCfg = AGENT_CONFIGS[picked];
 
@@ -1187,6 +1357,252 @@ export default function MazeRacePage() {
         ctx.fillStyle = '#556677';
         ctx.font = `${mob ? 10 : 12}px "Courier New", monospace`;
         ctx.fillText(`Your pick: ${pickedCfg.name}`, w / 2, btnY + (mob ? 22 : 28));
+      }
+    }
+
+    // ─── RPS Battle overlay renderer ──────────────────────────
+
+    function drawRPSOverlay(w: number, h: number, now: number) {
+      const battle = rpsBattleRef.current;
+      if (!battle) return;
+
+      const agents = agentsRef.current;
+      const a1 = agents.find(a => a.id === battle.agent1Id)!;
+      const a2 = agents.find(a => a.id === battle.agent2Id)!;
+      const elapsed = now - battle.startTime;
+      const mob = w < 600;
+
+      // Dark overlay
+      ctx.fillStyle = 'rgba(8,8,14,0.92)';
+      ctx.fillRect(0, 0, w, h);
+
+      const cxr = w / 2;
+      const cyr = h / 2;
+      const charSpacing = mob ? w * 0.25 : Math.min(w * 0.18, 200);
+      const char1x = cxr - charSpacing;
+      const char2x = cxr + charSpacing;
+      const charY = cyr - (mob ? 50 : 80);
+      const charSize = mob ? 70 : 110;
+
+      function drawChar(x: number, y: number, sz: number, agent: AnimAgent) {
+        const sprite = spritesRef.current[agent.id];
+        if (sprite && sprite.complete && sprite.naturalWidth > 0) {
+          ctx.drawImage(sprite, x - sz / 2, y - sz / 2, sz, sz);
+        } else {
+          ctx.beginPath();
+          ctx.arc(x, y, sz * 0.3, 0, Math.PI * 2);
+          ctx.fillStyle = agent.color;
+          ctx.fill();
+        }
+      }
+
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      if (elapsed < RPS_INTRO) {
+        // ── INTRO: slide characters in ──
+        const t = elapsed / RPS_INTRO;
+        const slideT = easeOutCubic(Math.min(t * 1.5, 1));
+
+        ctx.save();
+        ctx.globalAlpha = Math.min(t * 2, 1);
+        ctx.shadowColor = '#ff4444';
+        ctx.shadowBlur = 20;
+        ctx.fillStyle = '#ffffff';
+        ctx.font = `bold ${mob ? 22 : 38}px "Courier New", monospace`;
+        ctx.fillText('\u2694 SHOWDOWN! \u2694', cxr, charY - (mob ? 50 : 70));
+        ctx.restore();
+
+        const offset = (1 - slideT) * w * 0.5;
+        drawChar(char1x - offset, charY, charSize, a1);
+        drawChar(char2x + offset, charY, charSize, a2);
+
+        if (t > 0.3) {
+          ctx.save();
+          ctx.globalAlpha = Math.min((t - 0.3) * 3, 1);
+          ctx.shadowColor = '#ffffff';
+          ctx.shadowBlur = 15;
+          ctx.fillStyle = '#ffffff';
+          ctx.font = `bold ${mob ? 26 : 40}px "Courier New", monospace`;
+          ctx.fillText('VS', cxr, charY);
+          ctx.restore();
+        }
+
+        if (t > 0.5) {
+          ctx.save();
+          ctx.globalAlpha = Math.min((t - 0.5) * 4, 1);
+          ctx.font = `bold ${mob ? 13 : 17}px "Courier New", monospace`;
+          ctx.fillStyle = a1.color;
+          ctx.fillText(a1.name, char1x, charY + charSize / 2 + 16);
+          ctx.fillStyle = a2.color;
+          ctx.fillText(a2.name, char2x, charY + charSize / 2 + 16);
+          ctx.restore();
+        }
+      } else {
+        // ── POST-INTRO: characters always visible ──
+        drawChar(char1x, charY, charSize, a1);
+        drawChar(char2x, charY, charSize, a2);
+        ctx.fillStyle = '#ffffff44';
+        ctx.font = `bold ${mob ? 18 : 28}px "Courier New", monospace`;
+        ctx.fillText('VS', cxr, charY);
+
+        ctx.font = `bold ${mob ? 13 : 17}px "Courier New", monospace`;
+        ctx.fillStyle = a1.color;
+        ctx.fillText(a1.name, char1x, charY + charSize / 2 + 16);
+        ctx.fillStyle = a2.color;
+        ctx.fillText(a2.name, char2x, charY + charSize / 2 + 16);
+
+        const afterIntro = elapsed - RPS_INTRO;
+        const roundIdx = Math.floor(afterIntro / RPS_ROUND_DUR);
+        const roundElapsed = afterIntro % RPS_ROUND_DUR;
+        const emojiY = charY + charSize / 2 + (mob ? 55 : 75);
+        const emojiSize = mob ? 32 : 44;
+
+        if (roundIdx < battle.rounds.length) {
+          const round = battle.rounds[roundIdx];
+
+          // Round label
+          ctx.fillStyle = '#888';
+          ctx.font = `${mob ? 11 : 14}px "Courier New", monospace`;
+          ctx.fillText(
+            roundIdx >= 3 ? `Sudden Death ${roundIdx - 2}!` : `Round ${roundIdx + 1} of 3`,
+            cxr, emojiY - (mob ? 28 : 38)
+          );
+
+          // Running score
+          const prev = roundIdx > 0 ? battle.scores[roundIdx - 1] : { a1: 0, a2: 0 };
+          ctx.font = `bold ${mob ? 15 : 20}px "Courier New", monospace`;
+          ctx.fillStyle = a1.color;
+          ctx.fillText(`${prev.a1}`, cxr - (mob ? 30 : 50), emojiY - (mob ? 12 : 16));
+          ctx.fillStyle = '#555';
+          ctx.fillText('\u2014', cxr, emojiY - (mob ? 12 : 16));
+          ctx.fillStyle = a2.color;
+          ctx.fillText(`${prev.a2}`, cxr + (mob ? 30 : 50), emojiY - (mob ? 12 : 16));
+
+          if (roundElapsed < RPS_SHAKE) {
+            // ── SHAKE: bouncing fists ──
+            const shakeT = roundElapsed / RPS_SHAKE;
+            const bounce = Math.sin(shakeT * Math.PI * 8) * (mob ? 8 : 12);
+            const phase = Math.floor(shakeT * 3);
+            const labels = ['Rock...', 'Paper...', 'Scissors...'];
+            ctx.fillStyle = '#ffffff';
+            ctx.font = `bold ${mob ? 16 : 24}px "Courier New", monospace`;
+            ctx.fillText(labels[Math.min(phase, 2)], cxr, emojiY + (mob ? 35 : 50));
+
+            ctx.font = `${emojiSize}px serif`;
+            ctx.fillText('\u270a', char1x, emojiY + bounce);
+            ctx.fillText('\u270a', char2x, emojiY - bounce);
+          } else {
+            // ── REVEAL: show choices ──
+            const revealT = (roundElapsed - RPS_SHAKE) / RPS_REVEAL;
+
+            const sKey = `r${roundIdx}`;
+            if (!battle.soundsPlayed.has(sKey)) {
+              battle.soundsPlayed.add(sKey);
+              playSfx('/sfx-powerup.mp3');
+            }
+
+            const s = easeOutCubic(Math.min(revealT * 2.5, 1));
+            ctx.font = `${Math.floor(emojiSize * s)}px serif`;
+            ctx.fillText(RPS_EMOJI[round.a1Choice], char1x, emojiY);
+            ctx.fillText(RPS_EMOJI[round.a2Choice], char2x, emojiY);
+
+            if (revealT > 0.25) {
+              const ga = Math.min((revealT - 0.25) * 2, 1);
+              if (round.winner !== 'draw') {
+                const winX = round.winner === 'a1' ? char1x : char2x;
+                const winColor = round.winner === 'a1' ? a1.color : a2.color;
+                ctx.save();
+                ctx.globalAlpha = ga;
+                ctx.shadowColor = winColor;
+                ctx.shadowBlur = 20;
+                ctx.beginPath();
+                ctx.arc(winX, emojiY, emojiSize * 0.7, 0, Math.PI * 2);
+                ctx.strokeStyle = winColor;
+                ctx.lineWidth = 3;
+                ctx.stroke();
+                ctx.restore();
+              }
+
+              ctx.save();
+              ctx.globalAlpha = ga;
+              ctx.font = `bold ${mob ? 13 : 17}px "Courier New", monospace`;
+              if (round.winner === 'a1') {
+                ctx.fillStyle = a1.color;
+                ctx.fillText(`${a1.name} wins!`, cxr, emojiY + (mob ? 35 : 50));
+              } else if (round.winner === 'a2') {
+                ctx.fillStyle = a2.color;
+                ctx.fillText(`${a2.name} wins!`, cxr, emojiY + (mob ? 35 : 50));
+              } else {
+                ctx.fillStyle = '#888';
+                ctx.fillText('Draw!', cxr, emojiY + (mob ? 35 : 50));
+              }
+              ctx.restore();
+            }
+          }
+        } else {
+          // ── FINAL RESULT ──
+          const finalElapsed = afterIntro - battle.rounds.length * RPS_ROUND_DUR;
+
+          if (finalElapsed < RPS_FINAL) {
+            const ft = finalElapsed / RPS_FINAL;
+            const loser = agents.find(a => a.id === battle.loserId)!;
+            const winnerId = battle.loserId === battle.agent1Id ? battle.agent2Id : battle.agent1Id;
+            const rpsWin = agents.find(a => a.id === winnerId)!;
+
+            if (!battle.soundsPlayed.has('final')) {
+              battle.soundsPlayed.add('final');
+              playSfx('/sfx-winner.mp3');
+            }
+
+            // Final score
+            const fs = battle.scores[battle.scores.length - 1];
+            ctx.font = `bold ${mob ? 20 : 32}px "Courier New", monospace`;
+            ctx.fillStyle = a1.color;
+            ctx.fillText(`${fs.a1}`, cxr - (mob ? 35 : 55), emojiY - 10);
+            ctx.fillStyle = '#ffffff';
+            ctx.fillText('\u2014', cxr, emojiY - 10);
+            ctx.fillStyle = a2.color;
+            ctx.fillText(`${fs.a2}`, cxr + (mob ? 35 : 55), emojiY - 10);
+
+            // Winner glow on character
+            const winPulse = Math.sin(now / 200) * 0.3 + 0.7;
+            const winCharX = rpsWin.id === battle.agent1Id ? char1x : char2x;
+            ctx.save();
+            ctx.shadowColor = rpsWin.color;
+            ctx.shadowBlur = 30 * winPulse;
+            ctx.beginPath();
+            ctx.arc(winCharX, charY, charSize * 0.45, 0, Math.PI * 2);
+            ctx.strokeStyle = rpsWin.color;
+            ctx.lineWidth = 3;
+            ctx.stroke();
+            ctx.restore();
+
+            ctx.save();
+            ctx.shadowColor = rpsWin.color;
+            ctx.shadowBlur = 20;
+            ctx.fillStyle = rpsWin.color;
+            ctx.font = `bold ${mob ? 18 : 28}px "Courier New", monospace`;
+            ctx.fillText(`${rpsWin.name} WINS!`, cxr, emojiY + (mob ? 25 : 35));
+            ctx.restore();
+
+            if (ft > 0.35) {
+              ctx.save();
+              ctx.globalAlpha = Math.min((ft - 0.35) * 3, 1);
+              ctx.fillStyle = '#ff4444';
+              ctx.font = `bold ${mob ? 13 : 17}px "Courier New", monospace`;
+              ctx.fillText(`${loser.name} gets respawned!`, cxr, emojiY + (mob ? 50 : 65));
+              ctx.restore();
+            }
+          } else if (!battle.resolved) {
+            // ── RESOLVE: respawn the loser ──
+            battle.resolved = true;
+            const loser = agents.find(a => a.id === battle.loserId)!;
+            respawnAgent(loser, turnRef.current);
+            playSfx('/sfx-death.mp3');
+            rpsBattleRef.current = null;
+          }
+        }
       }
     }
 
@@ -1418,6 +1834,22 @@ export default function MazeRacePage() {
             ctx.fill();
             break;
           }
+          case 'walljump': {
+            // Upward arrow
+            const aw = puSize * 0.4;
+            const ah = puSize * 0.8;
+            ctx.beginPath();
+            ctx.moveTo(px, py - ah * 0.5);
+            ctx.lineTo(px + aw, py);
+            ctx.lineTo(px + aw * 0.3, py);
+            ctx.lineTo(px + aw * 0.3, py + ah * 0.5);
+            ctx.lineTo(px - aw * 0.3, py + ah * 0.5);
+            ctx.lineTo(px - aw * 0.3, py);
+            ctx.lineTo(px - aw, py);
+            ctx.closePath();
+            ctx.fill();
+            break;
+          }
         }
       }
 
@@ -1579,6 +2011,19 @@ export default function MazeRacePage() {
             ctx.fillStyle = '#ffdd00';
             ctx.fill();
           }
+        }
+
+        // Wall jump indicator: green pulsing diamond above agent
+        if (agent.wallJumpAvailable) {
+          const wjPulse = Math.sin(now / 300 + Math.PI) * 0.15 + 0.5;
+          const wjSize = cellSize * 0.18;
+          ctx.save();
+          ctx.translate(ax, ay - cellSize * 0.38);
+          ctx.rotate(Math.PI / 4);
+          ctx.strokeStyle = `rgba(68,255,102,${wjPulse.toFixed(2)})`;
+          ctx.lineWidth = 2;
+          ctx.strokeRect(-wjSize, -wjSize, wjSize * 2, wjSize * 2);
+          ctx.restore();
         }
 
       }
@@ -1844,7 +2289,7 @@ export default function MazeRacePage() {
                   ctx.moveTo(puCx - puR * 0.45, puCy);
                   ctx.lineTo(puCx + puR * 0.45, puCy);
                   ctx.stroke();
-                } else {
+                } else if (pu.type === 'magnet') {
                   // Magnet — 4-pointed star
                   const ss = puR * 0.7;
                   const si = puR * 0.25;
@@ -1857,6 +2302,20 @@ export default function MazeRacePage() {
                   ctx.lineTo(puCx - si, puCy + si);
                   ctx.lineTo(puCx - ss, puCy);
                   ctx.lineTo(puCx - si, puCy - si);
+                  ctx.closePath();
+                  ctx.fill();
+                } else {
+                  // Wall Jump — upward arrow
+                  const aw2 = puR * 0.4;
+                  const ah2 = puR * 0.7;
+                  ctx.beginPath();
+                  ctx.moveTo(puCx, puCy - ah2);
+                  ctx.lineTo(puCx + aw2, puCy - ah2 * 0.3);
+                  ctx.lineTo(puCx + aw2 * 0.3, puCy - ah2 * 0.3);
+                  ctx.lineTo(puCx + aw2 * 0.3, puCy + ah2);
+                  ctx.lineTo(puCx - aw2 * 0.3, puCy + ah2);
+                  ctx.lineTo(puCx - aw2 * 0.3, puCy - ah2 * 0.3);
+                  ctx.lineTo(puCx - aw2, puCy - ah2 * 0.3);
                   ctx.closePath();
                   ctx.fill();
                 }
@@ -2047,17 +2506,26 @@ export default function MazeRacePage() {
           ctx.fillText(`d:${dist}`, povX + povW - 3, vpY + 2);
 
           // Status badges
+          let badgeY = vpY + povH - 12;
           if (agent.shieldTurns > 0) {
             ctx.fillStyle = '#00ddff';
             ctx.font = 'bold 9px "Courier New", monospace';
             ctx.textAlign = 'left';
-            ctx.fillText(`SHIELD ${agent.shieldTurns}`, povX + 3, vpY + povH - 12);
+            ctx.fillText('SHIELD', povX + 3, badgeY);
+            badgeY -= 10;
           }
           if (agent.speedTurns > 0) {
             ctx.fillStyle = '#ffdd00';
             ctx.font = 'bold 9px "Courier New", monospace';
             ctx.textAlign = 'left';
-            ctx.fillText(`SPEED ${agent.speedTurns}`, povX + 3, vpY + povH - 12);
+            ctx.fillText('SPEED', povX + 3, badgeY);
+            badgeY -= 10;
+          }
+          if (agent.wallJumpAvailable) {
+            ctx.fillStyle = '#44ff66';
+            ctx.font = 'bold 9px "Courier New", monospace';
+            ctx.textAlign = 'left';
+            ctx.fillText('WALLJUMP', povX + 3, badgeY);
           }
           if (agent.finished) {
             ctx.fillStyle = agent.finishOrder === 1 ? '#44ff66' : '#888';
@@ -2171,12 +2639,18 @@ export default function MazeRacePage() {
           } else if (respawnAge >= 0 && respawnAge < 3) {
             ctx.fillStyle = '#ff3333';
             ctx.fillText('RSP!', sx + 48, sy);
+          } else if (a.shieldTurns > 0 && a.speedTurns > 0) {
+            ctx.fillStyle = '#aaffcc';
+            ctx.fillText('SH+SP', sx + 48, sy);
           } else if (a.shieldTurns > 0) {
             ctx.fillStyle = '#00ddff';
-            ctx.fillText(`SH${a.shieldTurns}`, sx + 48, sy);
+            ctx.fillText('SH', sx + 48, sy);
           } else if (a.speedTurns > 0) {
             ctx.fillStyle = '#ffdd00';
-            ctx.fillText(`SP${a.speedTurns}`, sx + 48, sy);
+            ctx.fillText('SP', sx + 48, sy);
+          } else if (a.wallJumpAvailable) {
+            ctx.fillStyle = '#44ff66';
+            ctx.fillText('WJ', sx + 48, sy);
           } else {
             ctx.fillStyle = '#555';
             ctx.fillText(`${a.history.length}m`, sx + 48, sy);
@@ -2212,12 +2686,18 @@ export default function MazeRacePage() {
           } else if (respawnAge >= 0 && respawnAge < 3) {
             ctx.fillStyle = '#ff3333';
             ctx.fillText('RESPAWN!', sx + 22, barY);
+          } else if (a.shieldTurns > 0 && a.speedTurns > 0) {
+            ctx.fillStyle = '#aaffcc';
+            ctx.fillText('SHIELD+SPEED', sx + 22, barY);
           } else if (a.shieldTurns > 0) {
             ctx.fillStyle = '#00ddff';
-            ctx.fillText(`SHIELD(${a.shieldTurns})`, sx + 22, barY);
+            ctx.fillText('SHIELD', sx + 22, barY);
           } else if (a.speedTurns > 0) {
             ctx.fillStyle = '#ffdd00';
-            ctx.fillText(`SPEED(${a.speedTurns})`, sx + 22, barY);
+            ctx.fillText('SPEED', sx + 22, barY);
+          } else if (a.wallJumpAvailable) {
+            ctx.fillStyle = '#44ff66';
+            ctx.fillText('WALL JUMP', sx + 22, barY);
           } else {
             ctx.fillStyle = '#666';
             ctx.fillText(`${a.history.length} moves`, sx + 22, barY);
@@ -2250,6 +2730,11 @@ export default function MazeRacePage() {
           ctx.fillStyle = eqColors[colorIdx] + Math.floor(alpha * 255).toString(16).padStart(2, '0');
           ctx.fillRect(eqX + i * (barW + eqGap), eqY - barH, barW, barH);
         }
+      }
+
+      // ── RPS Battle overlay ──
+      if (rpsBattleRef.current) {
+        drawRPSOverlay(w, h, now);
       }
 
       // ── Finished overlay ──
