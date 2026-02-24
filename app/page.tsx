@@ -1260,13 +1260,26 @@ export default function MazeRacePage() {
         const puPulse = Math.sin(now / 400 + pu.id * 3) * 0.3 + 0.7;
         const puSize = cellSize * 0.3;
 
-        // Glow
-        const puGrad = ctx.createRadialGradient(px, py, 0, px, py, cellSize * 0.5);
-        puGrad.addColorStop(0, puColor + Math.floor(puPulse * 40).toString(16).padStart(2, '0'));
-        puGrad.addColorStop(1, puColor + '00');
+        // Outer glow — large, soft
+        const outerR = cellSize * 1.2 * puPulse;
+        const outerGrad = ctx.createRadialGradient(px, py, 0, px, py, outerR);
+        outerGrad.addColorStop(0, puColor + '44');
+        outerGrad.addColorStop(0.5, puColor + '18');
+        outerGrad.addColorStop(1, puColor + '00');
         ctx.beginPath();
-        ctx.arc(px, py, cellSize * 0.5, 0, Math.PI * 2);
-        ctx.fillStyle = puGrad;
+        ctx.arc(px, py, outerR, 0, Math.PI * 2);
+        ctx.fillStyle = outerGrad;
+        ctx.fill();
+
+        // Inner glow — bright core
+        const innerR = cellSize * 0.55;
+        const innerGrad = ctx.createRadialGradient(px, py, 0, px, py, innerR);
+        innerGrad.addColorStop(0, '#ffffff88');
+        innerGrad.addColorStop(0.3, puColor + '99');
+        innerGrad.addColorStop(1, puColor + '00');
+        ctx.beginPath();
+        ctx.arc(px, py, innerR, 0, Math.PI * 2);
+        ctx.fillStyle = innerGrad;
         ctx.fill();
 
         ctx.fillStyle = puColor;
@@ -1319,23 +1332,38 @@ export default function MazeRacePage() {
         }
       }
 
-      // ── Pass 1: Agent trails ──
+      // ── Pass 1: Agent trails (fade after ~15s) ──
+      const TRAIL_LIFESPAN = Math.round(15000 / ANIM_DURATION); // ~67 steps
       for (const agent of agents) {
-        if (agent.trail.length >= 2) {
-          ctx.beginPath();
-          ctx.strokeStyle = agent.color + '25';
-          ctx.lineWidth = cellSize * 0.15;
-          ctx.lineCap = 'round';
-          ctx.lineJoin = 'round';
+        if (agent.trail.length < 2) continue;
+        ctx.lineWidth = cellSize * 0.15;
+        ctx.lineCap = 'round';
 
-          for (let i = 0; i < agent.trail.length; i++) {
-            const tx = ox + agent.trail[i].col * cellSize + cellSize / 2;
-            const ty = oy + agent.trail[i].row * cellSize + cellSize / 2;
-            if (i === 0) ctx.moveTo(tx, ty);
-            else ctx.lineTo(tx, ty);
-          }
+        const len = agent.trail.length;
+        // Draw trail in segments with fading alpha
+        for (let i = 1; i < len; i++) {
+          const age = len - 1 - i; // 0 = newest, len-2 = oldest
+          if (age >= TRAIL_LIFESPAN) continue; // fully faded, skip
+          const fade = 1 - age / TRAIL_LIFESPAN; // 1.0 → 0.0
+          const alpha = Math.floor(fade * 0x30).toString(16).padStart(2, '0');
+          ctx.beginPath();
+          ctx.strokeStyle = agent.color + alpha;
+          const x0 = ox + agent.trail[i - 1].col * cellSize + cellSize / 2;
+          const y0 = oy + agent.trail[i - 1].row * cellSize + cellSize / 2;
+          const x1 = ox + agent.trail[i].col * cellSize + cellSize / 2;
+          const y1 = oy + agent.trail[i].row * cellSize + cellSize / 2;
+          ctx.moveTo(x0, y0);
+          ctx.lineTo(x1, y1);
+          ctx.stroke();
+        }
+        // Current animated segment at full alpha
+        if (len > 0) {
+          const lastT = agent.trail[len - 1];
           const visCol = lerp(agent.prevPosition.col, agent.position.col, animT);
           const visRow = lerp(agent.prevPosition.row, agent.position.row, animT);
+          ctx.beginPath();
+          ctx.strokeStyle = agent.color + '30';
+          ctx.moveTo(ox + lastT.col * cellSize + cellSize / 2, oy + lastT.row * cellSize + cellSize / 2);
           ctx.lineTo(ox + visCol * cellSize + cellSize / 2, oy + visRow * cellSize + cellSize / 2);
           ctx.stroke();
         }
