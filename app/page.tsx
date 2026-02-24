@@ -730,6 +730,23 @@ export default function MazeRacePage() {
 
     checkEnemyCollisions();
 
+    // Periodic shuffles — keep the board dynamic
+    const nextTurn = turnRef.current + 1;
+
+    // Uncollected power-ups drift to new positions every 15 turns
+    if (nextTurn > 0 && nextTurn % 15 === 0) {
+      for (const pu of powerUpsRef.current) {
+        if (!pu.collected) {
+          pu.position = getRandomPowerUpPosition();
+        }
+      }
+    }
+
+    // Teleport pads relocate every 25 turns (avoiding solution paths)
+    if (nextTurn > 0 && nextTurn % 25 === 0) {
+      teleportsRef.current = createTeleports(maze);
+    }
+
     moveTimeRef.current = performance.now();
     turnRef.current++;
     processingRef.current = false;
