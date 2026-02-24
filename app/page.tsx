@@ -433,6 +433,14 @@ export default function MazeRacePage() {
   const analyserRef = useRef<AnalyserNode | null>(null);
   const freqDataRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
 
+  // Preloaded logo image
+  const logoRef = useRef<HTMLImageElement | null>(null);
+  if (typeof window !== 'undefined' && !logoRef.current) {
+    const logo = new Image();
+    logo.src = '/logo.png';
+    logoRef.current = logo;
+  }
+
   // Preloaded character sprite images (keyed by agent id)
   const spritesRef = useRef<Record<number, HTMLImageElement>>({});
   if (typeof window !== 'undefined' && Object.keys(spritesRef.current).length === 0) {
@@ -1054,34 +1062,14 @@ export default function MazeRacePage() {
 
       ctx.textAlign = 'center';
 
-      // Title with glow — responsive sizing
-      const titleFontSize = mob ? 28 : 52;
-      const titleY = mob ? h * 0.05 : h * 0.1;
-      ctx.save();
-      ctx.shadowColor = '#4499ff';
-      ctx.shadowBlur = mob ? 18 : 30;
-      ctx.fillStyle = '#ffffff';
-      ctx.font = `bold ${titleFontSize}px "Courier New", monospace`;
-      ctx.fillText('MAZE RACE', w / 2, titleY);
-      ctx.restore();
-
-      // Decorative line
-      const lineW = mob ? w * 0.6 : 300;
-      const lineGrad = ctx.createLinearGradient(w / 2 - lineW / 2, 0, w / 2 + lineW / 2, 0);
-      lineGrad.addColorStop(0, 'rgba(68,153,255,0)');
-      lineGrad.addColorStop(0.5, 'rgba(68,153,255,0.6)');
-      lineGrad.addColorStop(1, 'rgba(68,153,255,0)');
-      ctx.fillStyle = lineGrad;
-      ctx.fillRect(w / 2 - lineW / 2, titleY + (mob ? 10 : 18), lineW, 1.5);
-
-      // Subtitle — shorter on mobile
-      ctx.fillStyle = '#6688aa';
-      if (mob) {
-        ctx.font = '10px "Courier New", monospace';
-        ctx.fillText('4 bots // dodge enemies // reach the center', w / 2, titleY + 26);
-      } else {
-        ctx.font = '15px "Courier New", monospace';
-        ctx.fillText('4 pathfinding bots  //  dodge enemies  //  grab power-ups  //  reach the center', w / 2, titleY + 48);
+      // Logo image — responsive sizing
+      const logo = logoRef.current;
+      const logoSize = mob ? Math.min(w * 0.5, 160) : 220;
+      const logoY = mob ? h * 0.01 : h * 0.02;
+      if (logo && logo.complete && logo.naturalWidth > 0) {
+        const aspect = logo.naturalWidth / logo.naturalHeight;
+        const logoW = logoSize * aspect;
+        ctx.drawImage(logo, w / 2 - logoW / 2, logoY, logoW, logoSize);
       }
 
       // "WHO WILL WIN?" prompt
