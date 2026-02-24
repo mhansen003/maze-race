@@ -394,28 +394,17 @@ function rpsWinner(a: RPSChoice, b: RPSChoice): 'a' | 'b' | 'draw' {
 function generateRPSBattle(a1Id: number, a2Id: number): RPSBattle {
   const rounds: RPSRound[] = [];
   const scores: { a1: number; a2: number }[] = [];
-  let a1s = 0, a2s = 0;
 
-  for (let i = 0; i < 3; i++) {
-    const c1 = randomRPS();
-    const c2 = randomRPS();
-    const result = rpsWinner(c1, c2);
-    if (result === 'a') a1s++;
-    else if (result === 'b') a2s++;
-    rounds.push({ a1Choice: c1, a2Choice: c2, winner: result === 'a' ? 'a1' : result === 'b' ? 'a2' : 'draw' });
-    scores.push({ a1: a1s, a2: a2s });
-  }
+  // Single decisive round — re-roll draws until someone wins
+  let c1: RPSChoice, c2: RPSChoice, result: 'a' | 'b' | 'draw';
+  do {
+    c1 = randomRPS();
+    c2 = randomRPS();
+    result = rpsWinner(c1, c2);
+  } while (result === 'draw');
 
-  // Sudden death if tied
-  while (a1s === a2s) {
-    const c1 = randomRPS();
-    const c2 = randomRPS();
-    const result = rpsWinner(c1, c2);
-    if (result === 'a') a1s++;
-    else if (result === 'b') a2s++;
-    rounds.push({ a1Choice: c1, a2Choice: c2, winner: result === 'a' ? 'a1' : result === 'b' ? 'a2' : 'draw' });
-    scores.push({ a1: a1s, a2: a2s });
-  }
+  rounds.push({ a1Choice: c1, a2Choice: c2, winner: result === 'a' ? 'a1' : 'a2' });
+  scores.push({ a1: result === 'a' ? 1 : 0, a2: result === 'b' ? 1 : 0 });
 
   return {
     agent1Id: a1Id,
@@ -423,7 +412,7 @@ function generateRPSBattle(a1Id: number, a2Id: number): RPSBattle {
     rounds,
     scores,
     startTime: 0,
-    loserId: a1s < a2s ? a1Id : a2Id,
+    loserId: result === 'a' ? a2Id : a1Id,
     resolved: false,
     soundsPlayed: new Set(),
   };
@@ -1470,24 +1459,6 @@ export default function MazeRacePage() {
         if (roundIdx < battle.rounds.length) {
           const round = battle.rounds[roundIdx];
 
-          // Round label
-          ctx.fillStyle = '#888';
-          ctx.font = `${mob ? 11 : 14}px "Courier New", monospace`;
-          ctx.fillText(
-            roundIdx >= 3 ? `Sudden Death ${roundIdx - 2}!` : `Round ${roundIdx + 1} of 3`,
-            cxr, emojiY - (mob ? 28 : 38)
-          );
-
-          // Running score
-          const prev = roundIdx > 0 ? battle.scores[roundIdx - 1] : { a1: 0, a2: 0 };
-          ctx.font = `bold ${mob ? 15 : 20}px "Courier New", monospace`;
-          ctx.fillStyle = a1.color;
-          ctx.fillText(`${prev.a1}`, cxr - (mob ? 30 : 50), emojiY - (mob ? 12 : 16));
-          ctx.fillStyle = '#555';
-          ctx.fillText('\u2014', cxr, emojiY - (mob ? 12 : 16));
-          ctx.fillStyle = a2.color;
-          ctx.fillText(`${prev.a2}`, cxr + (mob ? 30 : 50), emojiY - (mob ? 12 : 16));
-
           if (roundElapsed < RPS_SHAKE) {
             // ── SHAKE: bouncing fists ──
             const shakeT = roundElapsed / RPS_SHAKE;
@@ -1563,16 +1534,6 @@ export default function MazeRacePage() {
               battle.soundsPlayed.add('final');
               playSfx('/sfx-winner.mp3');
             }
-
-            // Final score
-            const fs = battle.scores[battle.scores.length - 1];
-            ctx.font = `bold ${mob ? 20 : 32}px "Courier New", monospace`;
-            ctx.fillStyle = a1.color;
-            ctx.fillText(`${fs.a1}`, cxr - (mob ? 35 : 55), emojiY - 10);
-            ctx.fillStyle = '#ffffff';
-            ctx.fillText('\u2014', cxr, emojiY - 10);
-            ctx.fillStyle = a2.color;
-            ctx.fillText(`${fs.a2}`, cxr + (mob ? 35 : 55), emojiY - 10);
 
             // Winner glow on character
             const winPulse = Math.sin(now / 200) * 0.3 + 0.7;
