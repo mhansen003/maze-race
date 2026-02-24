@@ -80,10 +80,10 @@ const AGENT_CONFIGS: AgentConfig[] = [
 // ─── Enemy config ─────────────────────────────────────────
 
 const ENEMY_TYPES: { type: EnemyType; color: string; label: string }[] = [
-  { type: 'ghost', color: '#aa44ff', label: 'Ghost' },
-  { type: 'freezer', color: '#44ffff', label: 'Freezer' },
-  { type: 'scrambler', color: '#ff8800', label: 'Scrambler' },
-  { type: 'thief', color: '#aa2222', label: 'Thief' },
+  { type: 'ghost', color: '#aa44ff', label: '\u{1F47B} Ghost' },
+  { type: 'freezer', color: '#44ffff', label: '\u{1F976} Freezer' },
+  { type: 'scrambler', color: '#ff8800', label: '\u{1F479} Scrambler' },
+  { type: 'thief', color: '#aa2222', label: '\u{1F9B9} Thief' },
 ];
 
 const ENEMY_COLORS: Record<EnemyType, string> = {
@@ -91,6 +91,13 @@ const ENEMY_COLORS: Record<EnemyType, string> = {
   freezer: '#44ffff',
   scrambler: '#ff8800',
   thief: '#aa2222',
+};
+
+const ENEMY_EMOJIS: Record<EnemyType, string> = {
+  ghost: '\u{1F47B}',    // 👻
+  freezer: '\u{1F976}',  // 🥶
+  scrambler: '\u{1F479}', // 👹
+  thief: '\u{1F9B9}',    // 🦹
 };
 
 // ─── Animation helpers ─────────────────────────────────────
@@ -923,39 +930,11 @@ export default function MazeRacePage() {
 
     // ─── Enemy shape drawing helpers ──────────────────────
 
-    function drawGhost(cx: number, cy: number, size: number, now: number) {
-      ctx.beginPath();
-      ctx.arc(cx, cy - size * 0.15, size * 0.7, Math.PI, 0);
-      ctx.lineTo(cx + size * 0.7, cy + size * 0.5);
-      for (let i = 3; i >= -3; i--) {
-        const wx = cx + (i / 3) * size * 0.7;
-        const wy = cy + size * 0.5 + Math.sin(i + now / 150) * size * 0.15;
-        ctx.lineTo(wx, wy);
-      }
-      ctx.closePath();
-    }
-
-    function drawDiamond(cx: number, cy: number, size: number) {
-      ctx.beginPath();
-      ctx.moveTo(cx, cy - size * 0.65);
-      ctx.lineTo(cx + size * 0.5, cy);
-      ctx.lineTo(cx, cy + size * 0.65);
-      ctx.lineTo(cx - size * 0.5, cy);
-      ctx.closePath();
-    }
-
-    function drawTriangle(cx: number, cy: number, size: number) {
-      ctx.beginPath();
-      ctx.moveTo(cx, cy - size * 0.6);
-      ctx.lineTo(cx + size * 0.55, cy + size * 0.45);
-      ctx.lineTo(cx - size * 0.55, cy + size * 0.45);
-      ctx.closePath();
-    }
-
-    function drawSquareShape(cx: number, cy: number, size: number) {
-      const half = size * 0.45;
-      ctx.beginPath();
-      ctx.rect(cx - half, cy - half, half * 2, half * 2);
+    function drawEmoji(emoji: string, cx: number, cy: number, size: number) {
+      ctx.font = `${size}px serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(emoji, cx, cy);
     }
 
     // ─── Draw splash screen (fully opaque) ───────────────
@@ -1381,25 +1360,7 @@ export default function MazeRacePage() {
         ctx.fillStyle = auraGrad;
         ctx.fill();
 
-        ctx.fillStyle = color;
-        switch (enemy.type) {
-          case 'ghost':
-            drawGhost(ex, ey, eSize, now);
-            ctx.fill();
-            break;
-          case 'freezer':
-            drawDiamond(ex, ey, eSize);
-            ctx.fill();
-            break;
-          case 'scrambler':
-            drawTriangle(ex, ey, eSize);
-            ctx.fill();
-            break;
-          case 'thief':
-            drawSquareShape(ex, ey, eSize);
-            ctx.fill();
-            break;
-        }
+        drawEmoji(ENEMY_EMOJIS[enemy.type], ex, ey, eSize);
       }
 
       // ── Pass 3: Agent dots ──
@@ -1653,39 +1614,20 @@ export default function MazeRacePage() {
             // Check for enemies at this cell
             for (const enemy of enemies) {
               if (enemy.position.row === cr && enemy.position.col === cc) {
-                const eColor = ENEMY_COLORS[enemy.type];
                 const ecx = (entityR.lx + entityR.rx) / 2;
                 const ecy = (entityR.ty + entityR.by) / 2;
-                const ePulse = Math.sin(now / 300 + enemy.id) * 0.2 + 0.8;
-                // Glowing enemy circle
-                const eGrad = ctx.createRadialGradient(ecx, ecy, 0, ecx, ecy, entitySize * ePulse);
-                eGrad.addColorStop(0, eColor);
-                eGrad.addColorStop(1, eColor + '00');
-                ctx.beginPath();
-                ctx.arc(ecx, ecy, entitySize * ePulse, 0, Math.PI * 2);
-                ctx.fillStyle = eGrad;
-                ctx.fill();
-                ctx.beginPath();
-                ctx.arc(ecx, ecy, entitySize * 0.4, 0, Math.PI * 2);
-                ctx.fillStyle = eColor;
-                ctx.fill();
+                drawEmoji(ENEMY_EMOJIS[enemy.type], ecx, ecy, entitySize * 1.6);
               }
               // Also check left/right side corridors for enemies
               const leftR = cr + lv.dr;
               const leftC = cc + lv.dc;
               if (enemy.position.row === leftR && enemy.position.col === leftC && !cell.walls[wm.left]) {
-                ctx.beginPath();
-                ctx.arc(entityR.lx + entitySize * 0.3, (entityR.ty + entityR.by) / 2, entitySize * 0.25, 0, Math.PI * 2);
-                ctx.fillStyle = ENEMY_COLORS[enemy.type] + 'aa';
-                ctx.fill();
+                drawEmoji(ENEMY_EMOJIS[enemy.type], entityR.lx + entitySize * 0.3, (entityR.ty + entityR.by) / 2, entitySize * 0.8);
               }
               const rightR = cr + rv.dr;
               const rightC = cc + rv.dc;
               if (enemy.position.row === rightR && enemy.position.col === rightC && !cell.walls[wm.right]) {
-                ctx.beginPath();
-                ctx.arc(entityR.rx - entitySize * 0.3, (entityR.ty + entityR.by) / 2, entitySize * 0.25, 0, Math.PI * 2);
-                ctx.fillStyle = ENEMY_COLORS[enemy.type] + 'aa';
-                ctx.fill();
+                drawEmoji(ENEMY_EMOJIS[enemy.type], entityR.rx - entitySize * 0.3, (entityR.ty + entityR.by) / 2, entitySize * 0.8);
               }
             }
 
@@ -1855,11 +1797,8 @@ export default function MazeRacePage() {
               const a = Math.atan2(rx, -ry);
               const edgeX = cx + Math.cos(a + Math.PI / 2) * (povW * 0.42);
               const edgeY = cy + Math.sin(a + Math.PI / 2) * (povH * 0.42);
-              const dotR = Math.max(3, 6 - edist);
-              ctx.beginPath();
-              ctx.arc(edgeX, edgeY, dotR, 0, Math.PI * 2);
-              ctx.fillStyle = ENEMY_COLORS[enemy.type] + 'cc';
-              ctx.fill();
+              const radarSize = Math.max(8, 14 - edist * 2);
+              drawEmoji(ENEMY_EMOJIS[enemy.type], edgeX, edgeY, radarSize);
             }
           }
           for (const pu of powerUpsRef.current) {
