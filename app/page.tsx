@@ -443,6 +443,15 @@ export default function MazeRacePage() {
     }
   }
 
+  // ─── Sound effects ─────────────────────────────────────────
+
+  function playSfx(src: string) {
+    if (mutedRef.current) return;
+    const sfx = new Audio(src);
+    sfx.volume = 0.6;
+    sfx.play().catch(() => {});
+  }
+
   // ─── Mute toggle ───────────────────────────────────────────
 
   function getMuteButtonBounds() {
@@ -490,6 +499,7 @@ export default function MazeRacePage() {
   }
 
   function respawnAgent(agent: AnimAgent, currentTurn: number) {
+    playSfx('/sfx-death.mp3');
     agent.deathPos = { ...agent.position }; // store where they died for flash
     const start = agent.startPos;
     agent.position = { ...start };
@@ -516,6 +526,7 @@ export default function MazeRacePage() {
       if (!samePos(agent.position, pu.position)) continue;
 
       // Collect it
+      playSfx('/sfx-powerup.mp3');
       pu.collected = true;
       pu.respawnAt = currentTurn + 10; // respawn after 10 turns
       const puDef = POWERUP_DEFS.find((d) => d.type === pu.type)!;
@@ -667,7 +678,7 @@ export default function MazeRacePage() {
       if (available.includes(move.direction)) {
         let newPos = applyMove(agent.position, move.direction);
         const wrapped = checkWrap(newPos, move.direction);
-        if (wrapped) { newPos = wrapped; }
+        if (wrapped) { newPos = wrapped; playSfx('/sfx-teleport.mp3'); }
         agent.position = newPos;
         agent.history.push(move.direction);
         agent.trail.push({ ...agent.position });
@@ -680,6 +691,7 @@ export default function MazeRacePage() {
           agent.finished = true;
           agent.finishOrder = finishCount;
           if (finishCount === 1) {
+            playSfx('/sfx-winner.mp3');
             winnerRef.current = agent;
             stateRef.current = 'finished';
             gameLoopActiveRef.current = false;
@@ -724,7 +736,7 @@ export default function MazeRacePage() {
       if (options.length > 0) {
         let bonusPos = applyMove(agent.position, options[0].dir);
         const bw = checkWrap(bonusPos, options[0].dir);
-        if (bw) bonusPos = bw;
+        if (bw) { bonusPos = bw; playSfx('/sfx-teleport.mp3'); }
         agent.position = bonusPos;
         agent.history.push(options[0].dir);
         agent.trail.push({ ...agent.position });
@@ -738,6 +750,7 @@ export default function MazeRacePage() {
           agent.finished = true;
           agent.finishOrder = finishCount;
           if (finishCount === 1) {
+            playSfx('/sfx-winner.mp3');
             winnerRef.current = agent;
             stateRef.current = 'finished';
             gameLoopActiveRef.current = false;
