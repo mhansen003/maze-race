@@ -204,6 +204,7 @@ interface AnimAgent {
   statusEffect: EnemyType | null;
   statusEffectTurn: number;
   respawnTurn: number;
+  deathPos: Position | null; // where agent was eaten (for flash effect)
   speedTurns: number;
   shieldTurns: number;
 }
@@ -226,6 +227,7 @@ function createAgents(): AnimAgent[] {
       statusEffect: null,
       statusEffectTurn: 0,
       respawnTurn: -99,
+      deathPos: null,
       speedTurns: 0,
       shieldTurns: 0,
     };
@@ -488,6 +490,7 @@ export default function MazeRacePage() {
   }
 
   function respawnAgent(agent: AnimAgent, currentTurn: number) {
+    agent.deathPos = { ...agent.position }; // store where they died for flash
     const start = agent.startPos;
     agent.position = { ...start };
     agent.prevPosition = { ...start };
@@ -843,16 +846,16 @@ export default function MazeRacePage() {
 
   function getAgentCardBounds(w: number, h: number) {
     const mob = w < 600;
-    const cardW = mob ? 72 : 110;
-    const cardH = mob ? 52 : 70;
-    const gap = mob ? 8 : 20;
+    const cardW = mob ? 130 : 180;
+    const cardH = mob ? 130 : 170;
+    const gap = mob ? 10 : 24;
 
     if (mob) {
       // 2×2 grid layout centered vertically
       const cols = 2;
       const totalW = cols * cardW + (cols - 1) * gap;
       const startX = (w - totalW) / 2;
-      const startY = h * 0.38;
+      const startY = h * 0.22;
       return AGENT_CONFIGS.map((_, i) => ({
         x: startX + (i % cols) * (cardW + gap),
         y: startY + Math.floor(i / cols) * (cardH + gap),
@@ -864,7 +867,7 @@ export default function MazeRacePage() {
     // Desktop: single row
     const totalW = AGENT_CONFIGS.length * cardW + (AGENT_CONFIGS.length - 1) * gap;
     const startX = (w - totalW) / 2;
-    const cardY = h * 0.48;
+    const cardY = h * 0.35;
     return AGENT_CONFIGS.map((_, i) => ({
       x: startX + i * (cardW + gap),
       y: cardY,
@@ -1089,17 +1092,17 @@ export default function MazeRacePage() {
 
         // Agent avatar (sprite or dot fallback)
         const avatarX = b.x + b.w / 2;
-        const avatarY = b.y + (mob ? 22 : 30);
+        const avatarY = b.y + b.h * 0.42;
         const spriteImg = spritesRef.current[cfg.id];
-        const avatarSize = mob ? 28 : 40;
-        const avatarPulse = isSelected ? 1 + Math.sin(now / 300) * 0.1 : 1;
+        const avatarSize = mob ? 80 : 120;
+        const avatarPulse = isSelected ? 1 + Math.sin(now / 300) * 0.08 : 1;
 
         if (isSelected) {
-          const glow = ctx.createRadialGradient(avatarX, avatarY, 0, avatarX, avatarY, avatarSize * 0.7);
+          const glow = ctx.createRadialGradient(avatarX, avatarY, 0, avatarX, avatarY, avatarSize * 0.6);
           glow.addColorStop(0, cfg.glowColor);
           glow.addColorStop(1, 'rgba(0,0,0,0)');
           ctx.beginPath();
-          ctx.arc(avatarX, avatarY, avatarSize * 0.7, 0, Math.PI * 2);
+          ctx.arc(avatarX, avatarY, avatarSize * 0.6, 0, Math.PI * 2);
           ctx.fillStyle = glow;
           ctx.fill();
         }
@@ -1109,8 +1112,8 @@ export default function MazeRacePage() {
           ctx.drawImage(spriteImg, avatarX - drawSize / 2, avatarY - drawSize / 2, drawSize, drawSize);
         } else {
           // Fallback dot for agents without sprites
-          const dotR = mob ? 7 : 10;
-          const dotPulse = isSelected ? Math.sin(now / 300) * 2 + dotR + 2 : dotR;
+          const dotR = mob ? 14 : 20;
+          const dotPulse = isSelected ? Math.sin(now / 300) * 3 + dotR + 3 : dotR;
           ctx.beginPath();
           ctx.arc(avatarX, avatarY, dotPulse, 0, Math.PI * 2);
           ctx.fillStyle = cfg.color;
@@ -1119,8 +1122,8 @@ export default function MazeRacePage() {
 
         // Agent name
         ctx.fillStyle = isSelected ? cfg.color : '#aaaaaa';
-        ctx.font = `${isSelected ? 'bold ' : ''}${mob ? 11 : 13}px "Courier New", monospace`;
-        ctx.fillText(cfg.name, avatarX, b.y + b.h - (mob ? 8 : 12));
+        ctx.font = `${isSelected ? 'bold ' : ''}${mob ? 13 : 16}px "Courier New", monospace`;
+        ctx.fillText(cfg.name, avatarX, b.y + b.h - (mob ? 10 : 16));
       }
 
       // Start button (only if picked)
@@ -1433,6 +1436,40 @@ export default function MazeRacePage() {
         drawEmoji(ENEMY_EMOJIS[enemy.type], ex, ey, eSize);
       }
 
+      // ── Death flash at kill location ──
+      for (const agent of agents) {
+        if (!agent.deathPos) continue;
+        const turnsSinceDeath = turn - agent.respawnTurn;
+        if (turnsSinceDeath < 0 || turnsSinceDeath >= 8) {
+          if (turnsSinceDeath >= 8) agent.deathPos = null; // clear after animation
+          continue;
+        }
+        const progress = turnsSinceDeath / 8;
+        const dx = ox + agent.deathPos.col * cellSize + cellSize / 2;
+        const deathY = oy + agent.deathPos.row * cellSize + cellSize / 2;
+        const blastRadius = cellSize * (1 + progress * 6);
+        const blastAlpha = (1 - progress) * 0.7;
+
+        const blastGrad = ctx.createRadialGradient(dx, deathY, 0, dx, deathY, blastRadius);
+        blastGrad.addColorStop(0, `rgba(255,80,40,${blastAlpha.toFixed(2)})`);
+        blastGrad.addColorStop(0.3, `rgba(255,200,50,${(blastAlpha * 0.6).toFixed(2)})`);
+        blastGrad.addColorStop(0.7, agent.color + Math.floor(blastAlpha * 100).toString(16).padStart(2, '0'));
+        blastGrad.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.beginPath();
+        ctx.arc(dx, deathY, blastRadius, 0, Math.PI * 2);
+        ctx.fillStyle = blastGrad;
+        ctx.fill();
+
+        // Shockwave ring
+        const ringRadius = cellSize * (0.5 + progress * 5);
+        const ringAlpha = (1 - progress) * 0.9;
+        ctx.beginPath();
+        ctx.arc(dx, deathY, ringRadius, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(255,255,255,${ringAlpha.toFixed(2)})`;
+        ctx.lineWidth = Math.max(1, 3 * (1 - progress));
+        ctx.stroke();
+      }
+
       // ── Pass 3: Agent dots ──
       for (const agent of agents) {
         const visCol = lerp(agent.prevPosition.col, agent.position.col, animT);
@@ -1592,6 +1629,15 @@ export default function MazeRacePage() {
           floor.addColorStop(1, '#080808');
           ctx.fillStyle = floor;
           ctx.fillRect(povX, cy, povW, povH / 2);
+
+          // Agent sprite watermark in top-left
+          const povSprite = spritesRef.current[agent.id];
+          if (povSprite && povSprite.complete && povSprite.naturalWidth > 0) {
+            const wmSize = Math.min(povW, povH) * 0.4;
+            ctx.globalAlpha = 0.15;
+            ctx.drawImage(povSprite, povX + 4, vpY + 4, wmSize, wmSize);
+            ctx.globalAlpha = 1;
+          }
 
           // Walk forward through corridor
           let hitEnd = false;
