@@ -1322,7 +1322,7 @@ export default function MazeRacePage() {
         // Agent name
         ctx.fillStyle = isSelected ? cfg.color : '#aaaaaa';
         ctx.font = `${isSelected ? 'bold ' : ''}${mob ? 13 : 16}px "Courier New", monospace`;
-        ctx.fillText(cfg.name, avatarX, b.y + b.h - (mob ? 22 : 30));
+        ctx.fillText(cfg.name, avatarX, b.y + b.h - (mob ? 34 : 46));
 
         // Global win count + least moves — in player color
         const wins = globalWinsRef.current[cfg.name.toLowerCase()] || 0;
@@ -1332,10 +1332,10 @@ export default function MazeRacePage() {
         ctx.shadowBlur = isSelected ? 8 : 0;
         ctx.fillStyle = cfg.color;
         ctx.font = `bold ${mob ? 13 : 16}px "Courier New", monospace`;
-        ctx.fillText(`${wins} win${wins !== 1 ? 's' : ''}`, avatarX, b.y + b.h - (mob ? 16 : 22));
+        ctx.fillText(`${wins} win${wins !== 1 ? 's' : ''}`, avatarX, b.y + b.h - (mob ? 18 : 26));
         ctx.fillStyle = leastMoves < 2000 ? '#aaffcc' : '#556677';
         ctx.font = `${mob ? 10 : 12}px "Courier New", monospace`;
-        ctx.fillText(leastMoves < 2000 ? `best: ${leastMoves}` : 'best: --', avatarX, b.y + b.h - (mob ? 4 : 6));
+        ctx.fillText(leastMoves < 2000 ? `best: ${leastMoves}` : 'best: --', avatarX, b.y + b.h - (mob ? 4 : 8));
         ctx.restore();
       }
 
