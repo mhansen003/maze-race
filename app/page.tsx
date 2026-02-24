@@ -303,6 +303,7 @@ function createEnemies(): Enemy[] {
     position: { ...center },
     prevPosition: { ...center },
     lastDirection: startDirs[i],
+    recentPositions: [],
   }));
 }
 
@@ -358,13 +359,19 @@ function moveEnemies(enemies: Enemy[], maze: Cell[][], agents: AnimAgent[]) {
       else if (agent.position.col > enemy.position.col && available.includes('right')) chaseDir = 'right';
     }
 
+    // Cycle detection: if current cell appeared 2+ times in last 8 moves, force new direction
+    const curKey = posKey(enemy.position);
+    const recentHits = enemy.recentPositions.slice(-8).filter((k) => k === curKey).length;
+    const enemyCycling = recentHits >= 2;
+
     let dir: Direction;
-    if (chaseDir) {
-      // LOS chase — lock on and pursue
+    if (chaseDir && !enemyCycling) {
+      // LOS chase — lock on and pursue (skip if cycling to break pattern)
       dir = chaseDir;
-    } else if (enemy.lastDirection && available.includes(enemy.lastDirection) && Math.random() < 0.7) {
+    } else if (!enemyCycling && enemy.lastDirection && available.includes(enemy.lastDirection) && Math.random() < 0.7) {
       dir = enemy.lastDirection;
     } else {
+      // When cycling, avoid both reverse AND current direction to force exploration
       const nonReverse = enemy.lastDirection
         ? available.filter((d) => d !== OPPOSITE[enemy.lastDirection!])
         : available;
@@ -378,6 +385,8 @@ function moveEnemies(enemies: Enemy[], maze: Cell[][], agents: AnimAgent[]) {
     if (ew) eNewPos = ew;
     enemy.position = eNewPos;
     enemy.lastDirection = dir;
+    enemy.recentPositions.push(posKey(eNewPos));
+    if (enemy.recentPositions.length > 12) enemy.recentPositions.shift();
   }
 }
 
@@ -456,6 +465,7 @@ export default function MazeRacePage() {
           enemy.position = { row: CENTER, col: CENTER };
           enemy.prevPosition = { row: CENTER, col: CENTER };
           enemy.lastDirection = null;
+          enemy.recentPositions = [];
         }
       }
     }
@@ -580,12 +590,19 @@ export default function MazeRacePage() {
         };
       });
 
+      // Cycle detection: check if agent is revisiting recent positions
+      const recentTrail = agent.trail.slice(-10);
+      const currentKey = posKey(agent.position);
+      const recentVisits = recentTrail.filter((p) => posKey(p) === currentKey).length;
+      const isCycling = recentVisits >= 2;
+
       // Sort: avoid enemies > unvisited > least visited > closest to goal
-      // with random tie-breaking for variety
+      // When cycling, ignore distance tiebreaker and go fully random
       const sorted = [...options].sort((a, b) => {
         if (a.hasEnemy !== b.hasEnemy) return a.hasEnemy ? 1 : -1;
         if (a.isReverse !== b.isReverse) return a.isReverse ? 1 : -1;
         if (a.timesVisited !== b.timesVisited) return a.timesVisited - b.timesVisited;
+        if (isCycling) return 0; // random among same-visit-count when cycling
         return a.distanceToGoal - b.distanceToGoal;
       });
 
@@ -596,7 +613,7 @@ export default function MazeRacePage() {
           o.hasEnemy === best.hasEnemy &&
           o.isReverse === best.isReverse &&
           o.timesVisited === best.timesVisited &&
-          o.distanceToGoal === best.distanceToGoal
+          (isCycling || o.distanceToGoal === best.distanceToGoal)
       );
       const pick = tied[Math.floor(Math.random() * tied.length)];
       return { agentId: agent.id, direction: pick.direction };

@@ -67,6 +67,7 @@ export interface Enemy {
   position: Position;
   prevPosition: Position;
   lastDirection: Direction | null;
+  recentPositions: string[]; // posKey history for cycle detection
 }
 
 export interface NearbyEnemy {
