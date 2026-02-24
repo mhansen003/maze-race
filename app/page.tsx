@@ -732,6 +732,7 @@ export default function MazeRacePage() {
   function checkAgentCollisions() {
     if (rpsBattleRef.current) return; // already in a battle
     const agents = agentsRef.current;
+    const champId = pickedWinnerRef.current;
     for (let i = 0; i < agents.length; i++) {
       for (let j = i + 1; j < agents.length; j++) {
         if (agents[i].finished || agents[j].finished) continue;
@@ -740,10 +741,18 @@ export default function MazeRacePage() {
           samePos(agents[i].position, agents[j].prevPosition) &&
           samePos(agents[j].position, agents[i].prevPosition);
         if (sameCellNow || crossedPaths) {
-          const battle = generateRPSBattle(agents[i].id, agents[j].id);
-          battle.startTime = performance.now();
-          rpsBattleRef.current = battle;
-          playSfx('/sfx-teleport.mp3');
+          const champInvolved = agents[i].id === champId || agents[j].id === champId;
+          if (champInvolved) {
+            // Show full RPS battle overlay for user's champion
+            const battle = generateRPSBattle(agents[i].id, agents[j].id);
+            battle.startTime = performance.now();
+            rpsBattleRef.current = battle;
+            playSfx('/sfx-teleport.mp3');
+          } else {
+            // Silently pick a random loser and respawn them
+            const loser = Math.random() < 0.5 ? agents[i] : agents[j];
+            respawnAgent(loser, turnRef.current);
+          }
           return;
         }
       }
